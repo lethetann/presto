@@ -13,7 +13,12 @@
  */
 package com.facebook.presto.orc.reader;
 
-import com.facebook.presto.memory.context.LocalMemoryContext;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockLease;
+import com.facebook.presto.common.block.ClosingBlockLease;
+import com.facebook.presto.common.block.RunLengthEncodedBlock;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.orc.OrcLocalMemoryContext;
 import com.facebook.presto.orc.StreamDescriptor;
 import com.facebook.presto.orc.TupleDomainFilter;
 import com.facebook.presto.orc.metadata.ColumnEncoding;
@@ -22,15 +27,10 @@ import com.facebook.presto.orc.stream.DecimalInputStream;
 import com.facebook.presto.orc.stream.InputStreamSource;
 import com.facebook.presto.orc.stream.InputStreamSources;
 import com.facebook.presto.orc.stream.LongInputStream;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockLease;
-import com.facebook.presto.spi.block.ClosingBlockLease;
-import com.facebook.presto.spi.block.RunLengthEncodedBlock;
-import com.facebook.presto.spi.type.Type;
 import org.openjdk.jol.info.ClassLayout;
 
 import java.io.IOException;
-import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import static com.facebook.presto.orc.metadata.Stream.StreamKind.DATA;
@@ -66,7 +66,7 @@ public abstract class AbstractDecimalSelectiveStreamReader
     private final int valuesPerPosition;
     private final Block nullBlock;
     private final StreamDescriptor streamDescriptor;
-    private final LocalMemoryContext systemMemoryContext;
+    private final OrcLocalMemoryContext systemMemoryContext;
 
     private int readOffset;
     private boolean rowGroupOpen;
@@ -80,7 +80,7 @@ public abstract class AbstractDecimalSelectiveStreamReader
             StreamDescriptor streamDescriptor,
             Optional<TupleDomainFilter> filter,
             Optional<Type> outputType,
-            LocalMemoryContext systemMemoryContext,
+            OrcLocalMemoryContext systemMemoryContext,
             int valuesPerPosition)
     {
         requireNonNull(filter, "filter is null");
@@ -98,7 +98,7 @@ public abstract class AbstractDecimalSelectiveStreamReader
     }
 
     @Override
-    public void startStripe(InputStreamSources dictionaryStreamSources, List<ColumnEncoding> encoding)
+    public void startStripe(InputStreamSources dictionaryStreamSources, Map<Integer, ColumnEncoding> encoding)
     {
         presentStreamSource = missingStreamSource(BooleanInputStream.class);
         dataStreamSource = missingStreamSource(DecimalInputStream.class);
@@ -322,6 +322,17 @@ public abstract class AbstractDecimalSelectiveStreamReader
     @Override
     public void close()
     {
+        values = null;
+        nulls = null;
+        outputPositions = null;
+
+        presentStream = null;
+        presentStreamSource = null;
+        dataStream = null;
+        dataStreamSource = null;
+        scaleStream = null;
+        scaleStreamSource = null;
+
         systemMemoryContext.close();
     }
 

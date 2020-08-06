@@ -13,18 +13,21 @@
  */
 package com.facebook.presto.verifier.resolver;
 
-import com.facebook.presto.jdbc.QueryStats;
 import com.facebook.presto.sql.parser.IdentifierSymbol;
 import com.facebook.presto.sql.parser.ParsingOptions;
 import com.facebook.presto.sql.parser.SqlParser;
 import com.facebook.presto.sql.parser.SqlParserOptions;
 import com.facebook.presto.sql.tree.QualifiedName;
 import com.facebook.presto.sql.tree.Statement;
+import com.facebook.presto.verifier.TestingResultSetMetaData;
+import com.facebook.presto.verifier.TestingResultSetMetaData.ColumnInfo;
+import com.facebook.presto.verifier.framework.PrestoQueryException;
 import com.facebook.presto.verifier.framework.QueryBundle;
 import com.facebook.presto.verifier.framework.QueryException;
 import com.facebook.presto.verifier.framework.QueryResult;
 import com.facebook.presto.verifier.framework.QueryStage;
 import com.facebook.presto.verifier.prestoaction.PrestoAction;
+import com.facebook.presto.verifier.prestoaction.QueryActionStats;
 import com.google.common.base.Suppliers;
 import com.google.common.collect.ImmutableList;
 import org.testng.annotations.Test;
@@ -32,6 +35,7 @@ import org.testng.annotations.Test;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static com.facebook.presto.common.type.StandardTypes.VARCHAR;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_TOO_MANY_OPEN_PARTITIONS;
 import static com.facebook.presto.sql.parser.IdentifierSymbol.AT_SIGN;
 import static com.facebook.presto.sql.parser.IdentifierSymbol.COLON;
@@ -58,7 +62,7 @@ public class TestTooManyOpenPartitionsFailureResolver
         }
 
         @Override
-        public QueryStats execute(Statement statement, QueryStage queryStage)
+        public QueryActionStats execute(Statement statement, QueryStage queryStage)
         {
             throw new UnsupportedOperationException();
         }
@@ -69,8 +73,8 @@ public class TestTooManyOpenPartitionsFailureResolver
         {
             return new QueryResult(
                     ImmutableList.of(createTable.get()),
-                    ImmutableList.of("Create Table"),
-                    createQueryStats(0, 0));
+                    new TestingResultSetMetaData(ImmutableList.of(new ColumnInfo("Create Table", VARCHAR))),
+                    createQueryActionStats(0, 0));
         }
     }
 
@@ -84,12 +88,12 @@ public class TestTooManyOpenPartitionsFailureResolver
                     ParsingOptions.builder().setDecimalLiteralTreatment(AS_DOUBLE).build()),
             ImmutableList.of(),
             TEST);
-    private static final QueryException HIVE_TOO_MANY_OPEN_PARTITIONS_EXCEPTION = QueryException.forPresto(
+    private static final QueryException HIVE_TOO_MANY_OPEN_PARTITIONS_EXCEPTION = new PrestoQueryException(
             new RuntimeException(),
-            Optional.of(HIVE_TOO_MANY_OPEN_PARTITIONS),
             false,
-            Optional.of(createQueryStats(0, 0)),
-            TEST_MAIN);
+            TEST_MAIN,
+            Optional.of(HIVE_TOO_MANY_OPEN_PARTITIONS),
+            createQueryActionStats(0, 0));
 
     private static final AtomicReference<String> createTable = new AtomicReference<>();
 
@@ -106,25 +110,25 @@ public class TestTooManyOpenPartitionsFailureResolver
     public void testUnresolvedSufficientWorker()
     {
         createTable.set(format("CREATE TABLE %s (x varchar, ds varchar) WITH (partitioned_by = ARRAY[\"ds\"], bucket_count = 100)", TABLE_NAME));
-        getFailureResolver().resolve(CONTROL_QUERY_STATS, HIVE_TOO_MANY_OPEN_PARTITIONS_EXCEPTION, Optional.of(TEST_BUNDLE));
-        assertFalse(getFailureResolver().resolve(CONTROL_QUERY_STATS, HIVE_TOO_MANY_OPEN_PARTITIONS_EXCEPTION, Optional.of(TEST_BUNDLE)).isPresent());
+        getFailureResolver().resolveQueryFailure(CONTROL_QUERY_STATS, HIVE_TOO_MANY_OPEN_PARTITIONS_EXCEPTION, Optional.of(TEST_BUNDLE));
+        assertFalse(getFailureResolver().resolveQueryFailure(CONTROL_QUERY_STATS, HIVE_TOO_MANY_OPEN_PARTITIONS_EXCEPTION, Optional.of(TEST_BUNDLE)).isPresent());
     }
 
     @Test
     public void testUnresolvedNonBucketed()
     {
         createTable.set(format("CREATE TABLE %s (x varchar, ds varchar) WITH (partitioned_by = ARRAY[\"ds\"])", TABLE_NAME));
-        getFailureResolver().resolve(CONTROL_QUERY_STATS, HIVE_TOO_MANY_OPEN_PARTITIONS_EXCEPTION, Optional.of(TEST_BUNDLE));
-        assertFalse(getFailureResolver().resolve(CONTROL_QUERY_STATS, HIVE_TOO_MANY_OPEN_PARTITIONS_EXCEPTION, Optional.of(TEST_BUNDLE)).isPresent());
+        getFailureResolver().resolveQueryFailure(CONTROL_QUERY_STATS, HIVE_TOO_MANY_OPEN_PARTITIONS_EXCEPTION, Optional.of(TEST_BUNDLE));
+        assertFalse(getFailureResolver().resolveQueryFailure(CONTROL_QUERY_STATS, HIVE_TOO_MANY_OPEN_PARTITIONS_EXCEPTION, Optional.of(TEST_BUNDLE)).isPresent());
     }
 
     @Test
     public void testResolved()
     {
         createTable.set(format("CREATE TABLE %s (x varchar, ds varchar) WITH (partitioned_by = ARRAY[\"ds\"], bucket_count = 101)", TABLE_NAME));
-        getFailureResolver().resolve(CONTROL_QUERY_STATS, HIVE_TOO_MANY_OPEN_PARTITIONS_EXCEPTION, Optional.of(TEST_BUNDLE));
+        getFailureResolver().resolveQueryFailure(CONTROL_QUERY_STATS, HIVE_TOO_MANY_OPEN_PARTITIONS_EXCEPTION, Optional.of(TEST_BUNDLE));
         assertEquals(
-                getFailureResolver().resolve(CONTROL_QUERY_STATS, HIVE_TOO_MANY_OPEN_PARTITIONS_EXCEPTION, Optional.of(TEST_BUNDLE)),
-                Optional.of("Auto Resolved: No enough worker on test cluster"));
+                getFailureResolver().resolveQueryFailure(CONTROL_QUERY_STATS, HIVE_TOO_MANY_OPEN_PARTITIONS_EXCEPTION, Optional.of(TEST_BUNDLE)),
+                Optional.of("Not enough workers on test cluster"));
     }
 }

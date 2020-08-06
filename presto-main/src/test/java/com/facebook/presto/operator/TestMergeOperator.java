@@ -15,15 +15,16 @@ package com.facebook.presto.operator;
 
 import com.facebook.airlift.http.client.HttpClient;
 import com.facebook.airlift.http.client.testing.TestingHttpClient;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.SortOrder;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.execution.Location;
 import com.facebook.presto.execution.TaskId;
 import com.facebook.presto.execution.buffer.PagesSerdeFactory;
 import com.facebook.presto.execution.buffer.TestingPagesSerdeFactory;
 import com.facebook.presto.metadata.RemoteTransactionHandle;
 import com.facebook.presto.metadata.Split;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.block.SortOrder;
 import com.facebook.presto.spi.plan.PlanNodeId;
-import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.split.RemoteSplit;
 import com.facebook.presto.sql.gen.OrderingCompiler;
 import com.google.common.cache.CacheBuilder;
@@ -34,7 +35,6 @@ import org.testng.annotations.AfterMethod;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
 
-import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ScheduledExecutorService;
@@ -44,13 +44,13 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static com.facebook.airlift.concurrent.Threads.daemonThreadsNamed;
 import static com.facebook.presto.RowPagesBuilder.rowPagesBuilder;
 import static com.facebook.presto.SessionTestUtils.TEST_SESSION;
+import static com.facebook.presto.common.block.SortOrder.ASC_NULLS_FIRST;
+import static com.facebook.presto.common.block.SortOrder.DESC_NULLS_FIRST;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
 import static com.facebook.presto.operator.OperatorAssertion.assertOperatorIsBlocked;
 import static com.facebook.presto.operator.OperatorAssertion.assertOperatorIsUnblocked;
 import static com.facebook.presto.operator.PageAssertions.assertPageEquals;
-import static com.facebook.presto.spi.block.SortOrder.ASC_NULLS_FIRST;
-import static com.facebook.presto.spi.block.SortOrder.DESC_NULLS_FIRST;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
 import static com.facebook.presto.testing.TestingTaskContext.createTaskContext;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static java.util.concurrent.Executors.newSingleThreadScheduledExecutor;
@@ -83,7 +83,7 @@ public class TestMergeOperator
 
         taskBuffers = CacheBuilder.newBuilder().build(CacheLoader.from(TestingTaskBuffer::new));
         httpClient = new TestingHttpClient(new TestingExchangeHttpClientHandler(taskBuffers), executor);
-        exchangeClientFactory = new ExchangeClientFactory(new ExchangeClientConfig(), httpClient, executor);
+        exchangeClientFactory = new ExchangeClientFactory(new ExchangeClientConfig(), httpClient, new TestingDriftClient<>(), executor);
         orderingCompiler = new OrderingCompiler();
     }
 
@@ -351,7 +351,7 @@ public class TestMergeOperator
 
     private static Split createRemoteSplit(String taskId)
     {
-        return new Split(ExchangeOperator.REMOTE_CONNECTOR_ID, new RemoteTransactionHandle(), new RemoteSplit(URI.create("http://localhost/" + taskId), TaskId.valueOf(taskId)));
+        return new Split(ExchangeOperator.REMOTE_CONNECTOR_ID, new RemoteTransactionHandle(), new RemoteSplit(new Location("http://localhost/" + taskId), TaskId.valueOf(taskId)));
     }
 
     private static List<Page> pullAvailablePages(Operator operator)

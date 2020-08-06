@@ -13,26 +13,27 @@
  */
 package com.facebook.presto.sql.relational;
 
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.function.OperatorType;
+import com.facebook.presto.common.predicate.DiscreteValues;
+import com.facebook.presto.common.predicate.Domain;
+import com.facebook.presto.common.predicate.Marker;
+import com.facebook.presto.common.predicate.NullableValue;
+import com.facebook.presto.common.predicate.Range;
+import com.facebook.presto.common.predicate.Ranges;
+import com.facebook.presto.common.predicate.SortedRangeSet;
+import com.facebook.presto.common.predicate.TupleDomain;
+import com.facebook.presto.common.predicate.Utils;
+import com.facebook.presto.common.predicate.ValueSet;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.expressions.LogicalRowExpressions;
 import com.facebook.presto.metadata.FunctionManager;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.metadata.OperatorNotFoundException;
 import com.facebook.presto.spi.ConnectorSession;
-import com.facebook.presto.spi.block.Block;
 import com.facebook.presto.spi.function.FunctionHandle;
 import com.facebook.presto.spi.function.FunctionMetadata;
-import com.facebook.presto.spi.function.OperatorType;
 import com.facebook.presto.spi.function.StandardFunctionResolution;
-import com.facebook.presto.spi.predicate.DiscreteValues;
-import com.facebook.presto.spi.predicate.Domain;
-import com.facebook.presto.spi.predicate.Marker;
-import com.facebook.presto.spi.predicate.NullableValue;
-import com.facebook.presto.spi.predicate.Range;
-import com.facebook.presto.spi.predicate.Ranges;
-import com.facebook.presto.spi.predicate.SortedRangeSet;
-import com.facebook.presto.spi.predicate.TupleDomain;
-import com.facebook.presto.spi.predicate.Utils;
-import com.facebook.presto.spi.predicate.ValueSet;
 import com.facebook.presto.spi.relation.CallExpression;
 import com.facebook.presto.spi.relation.ConstantExpression;
 import com.facebook.presto.spi.relation.DeterminismEvaluator;
@@ -44,7 +45,6 @@ import com.facebook.presto.spi.relation.RowExpressionVisitor;
 import com.facebook.presto.spi.relation.SpecialFormExpression;
 import com.facebook.presto.spi.relation.SpecialFormExpression.Form;
 import com.facebook.presto.spi.relation.VariableReferenceExpression;
-import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.sql.InterpretedFunctionInvoker;
 import com.facebook.presto.sql.planner.RowExpressionInterpreter;
 import com.google.common.collect.ImmutableList;
@@ -59,26 +59,26 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import static com.facebook.presto.common.function.OperatorType.BETWEEN;
+import static com.facebook.presto.common.function.OperatorType.EQUAL;
+import static com.facebook.presto.common.function.OperatorType.GREATER_THAN;
+import static com.facebook.presto.common.function.OperatorType.GREATER_THAN_OR_EQUAL;
+import static com.facebook.presto.common.function.OperatorType.IS_DISTINCT_FROM;
+import static com.facebook.presto.common.function.OperatorType.LESS_THAN;
+import static com.facebook.presto.common.function.OperatorType.LESS_THAN_OR_EQUAL;
+import static com.facebook.presto.common.function.OperatorType.NOT_EQUAL;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
 import static com.facebook.presto.expressions.LogicalRowExpressions.FALSE_CONSTANT;
 import static com.facebook.presto.expressions.LogicalRowExpressions.TRUE_CONSTANT;
 import static com.facebook.presto.expressions.LogicalRowExpressions.and;
 import static com.facebook.presto.expressions.LogicalRowExpressions.or;
 import static com.facebook.presto.metadata.CastType.CAST;
 import static com.facebook.presto.metadata.CastType.SATURATED_FLOOR_CAST;
-import static com.facebook.presto.spi.function.OperatorType.BETWEEN;
-import static com.facebook.presto.spi.function.OperatorType.EQUAL;
-import static com.facebook.presto.spi.function.OperatorType.GREATER_THAN;
-import static com.facebook.presto.spi.function.OperatorType.GREATER_THAN_OR_EQUAL;
-import static com.facebook.presto.spi.function.OperatorType.IS_DISTINCT_FROM;
-import static com.facebook.presto.spi.function.OperatorType.LESS_THAN;
-import static com.facebook.presto.spi.function.OperatorType.LESS_THAN_OR_EQUAL;
-import static com.facebook.presto.spi.function.OperatorType.NOT_EQUAL;
 import static com.facebook.presto.spi.relation.ExpressionOptimizer.Level.OPTIMIZED;
 import static com.facebook.presto.spi.relation.SpecialFormExpression.Form.AND;
 import static com.facebook.presto.spi.relation.SpecialFormExpression.Form.IN;
 import static com.facebook.presto.spi.relation.SpecialFormExpression.Form.IS_NULL;
 import static com.facebook.presto.spi.relation.SpecialFormExpression.Form.OR;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
 import static com.facebook.presto.sql.analyzer.TypeSignatureProvider.fromTypes;
 import static com.facebook.presto.sql.planner.LiteralEncoder.toRowExpression;
 import static com.facebook.presto.sql.relational.Expressions.call;
@@ -119,6 +119,11 @@ public final class RowExpressionDomainTranslator
         return domains.entrySet().stream()
                 .map(entry -> toPredicate(entry.getValue(), entry.getKey()))
                 .collect(collectingAndThen(toImmutableList(), logicalRowExpressions::combineConjuncts));
+    }
+
+    public ExtractionResult<VariableReferenceExpression> fromPredicate(ConnectorSession session, RowExpression predicate)
+    {
+        return fromPredicate(session, predicate, BASIC_COLUMN_EXTRACTOR);
     }
 
     @Override
@@ -559,7 +564,7 @@ public final class RowExpressionDomainTranslator
         private Optional<Object> floorValue(Type fromType, Type toType, Object value)
         {
             return getSaturatedFloorCastOperator(fromType, toType)
-                    .map((operator) -> functionInvoker.invoke(operator, session, value));
+                    .map((operator) -> functionInvoker.invoke(operator, session.getSqlFunctionProperties(), value));
         }
 
         private Optional<FunctionHandle> getSaturatedFloorCastOperator(Type fromType, Type toType)
@@ -575,7 +580,7 @@ public final class RowExpressionDomainTranslator
         private int compareOriginalValueToCoerced(Type originalValueType, Object originalValue, Type coercedValueType, Object coercedValue)
         {
             FunctionHandle castToOriginalTypeOperator = metadata.getFunctionManager().lookupCast(CAST, coercedValueType.getTypeSignature(), originalValueType.getTypeSignature());
-            Object coercedValueInOriginalType = functionInvoker.invoke(castToOriginalTypeOperator, session, coercedValue);
+            Object coercedValueInOriginalType = functionInvoker.invoke(castToOriginalTypeOperator, session.getSqlFunctionProperties(), coercedValue);
             Block originalValueBlock = Utils.nativeValueToBlock(originalValueType, originalValue);
             Block coercedValueBlock = Utils.nativeValueToBlock(originalValueType, coercedValueInOriginalType);
             return originalValueType.compareTo(originalValueBlock, 0, coercedValueBlock, 0);

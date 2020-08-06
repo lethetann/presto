@@ -14,17 +14,16 @@
 package com.facebook.presto.operator;
 
 import com.esri.core.geometry.ogc.OGCGeometry;
-import com.esri.core.geometry.ogc.OGCPoint;
 import com.facebook.presto.Session;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.PageBuilder;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.geospatial.GeometryUtils;
 import com.facebook.presto.geospatial.Rectangle;
 import com.facebook.presto.geospatial.rtree.Flatbush;
 import com.facebook.presto.geospatial.rtree.HasExtent;
 import com.facebook.presto.operator.SpatialIndexBuilderOperator.SpatialPredicate;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.PageBuilder;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.sql.gen.JoinFilterFunctionCompiler.JoinFilterFunctionFactory;
 import io.airlift.slice.Slice;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
@@ -36,13 +35,13 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalDouble;
 
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
 import static com.facebook.presto.geospatial.GeometryUtils.getExtent;
 import static com.facebook.presto.geospatial.serde.EsriGeometrySerde.deserialize;
 import static com.facebook.presto.operator.JoinUtils.channelsToPages;
 import static com.facebook.presto.operator.SyntheticAddress.decodePosition;
 import static com.facebook.presto.operator.SyntheticAddress.decodeSliceIndex;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
 import static com.google.common.base.Verify.verify;
 import static java.lang.Math.toIntExact;
 import static java.util.Objects.requireNonNull;
@@ -132,12 +131,12 @@ public class PagesRTreeIndex
         this.rtree = requireNonNull(rtree, "rtree is null");
         this.radiusChannel = radiusChannel.orElse(-1);
         this.spatialRelationshipTest = requireNonNull(spatialRelationshipTest, "spatial relationship is null");
-        this.filterFunction = filterFunctionFactory.map(factory -> factory.create(session.toConnectorSession(), addresses, channelsToPages(channels))).orElse(null);
+        this.filterFunction = filterFunctionFactory.map(factory -> factory.create(session.getSqlFunctionProperties(), addresses, channelsToPages(channels))).orElse(null);
         this.partitions = requireNonNull(partitions, "partitions is null");
     }
 
     /**
-     * Returns an array of addresses from {@link PagesIndex#valueAddresses} corresponding
+     * Returns an array of addresses from {@link PagesIndex#getValueAddresses()} corresponding
      * to rows with matching geometries.
      * <p>
      * The caller is responsible for calling {@link #isJoinPositionEligible(int, int, Page)}
@@ -160,23 +159,20 @@ public class PagesRTreeIndex
             return EMPTY_ADDRESSES;
         }
 
-        boolean probeIsPoint = probeGeometry instanceof OGCPoint;
-
         IntArrayList matchingPositions = new IntArrayList();
 
         Rectangle queryRectangle = getExtent(probeGeometry);
+        boolean probeIsPoint = queryRectangle.isPointlike();
         rtree.findIntersections(queryRectangle, geometryWithPosition -> {
             OGCGeometry buildGeometry = geometryWithPosition.getGeometry();
-            if (partitions.isEmpty() || (probePartition == geometryWithPosition.getPartition() && (probeIsPoint || (buildGeometry instanceof OGCPoint) || testReferencePoint(queryRectangle, buildGeometry, probePartition)))) {
-                if (radiusChannel == -1) {
-                    if (spatialRelationshipTest.apply(buildGeometry, probeGeometry, OptionalDouble.empty())) {
-                        matchingPositions.add(geometryWithPosition.getPosition());
-                    }
-                }
-                else {
-                    if (spatialRelationshipTest.apply(geometryWithPosition.getGeometry(), probeGeometry, OptionalDouble.of(getRadius(geometryWithPosition.getPosition())))) {
-                        matchingPositions.add(geometryWithPosition.getPosition());
-                    }
+            Rectangle buildEnvelope = geometryWithPosition.getExtent();
+            if (partitions.isEmpty() || (probePartition == geometryWithPosition.getPartition() &&
+                    (probeIsPoint || buildEnvelope.isPointlike() || testReferencePoint(queryRectangle, buildEnvelope, probePartition)))) {
+                OptionalDouble radius = radiusChannel == -1 ?
+                        OptionalDouble.empty() :
+                        OptionalDouble.of(getRadius(geometryWithPosition.getPosition()));
+                if (spatialRelationshipTest.apply(buildGeometry, probeGeometry, radius)) {
+                    matchingPositions.add(geometryWithPosition.getPosition());
                 }
             }
         });
@@ -184,16 +180,14 @@ public class PagesRTreeIndex
         return matchingPositions.toIntArray(null);
     }
 
-    private boolean testReferencePoint(Rectangle probeEnvelope, OGCGeometry buildGeometry, int partition)
+    private boolean testReferencePoint(Rectangle probeEnvelope, Rectangle buildEnvelope, int partition)
     {
-        Rectangle buildEnvelope = getExtent(buildGeometry);
         Rectangle intersection = buildEnvelope.intersection(probeEnvelope);
         if (intersection == null) {
             return false;
         }
 
         Rectangle extent = partitions.get(partition);
-
         double x = intersection.getXMin();
         double y = intersection.getYMin();
         return x >= extent.getXMin() && x < extent.getXMax() && y >= extent.getYMin() && y < extent.getYMax();

@@ -63,6 +63,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static com.facebook.airlift.concurrent.Threads.daemonThreadsNamed;
+import static com.facebook.airlift.http.client.HttpUriBuilder.uriBuilderFrom;
 import static com.facebook.airlift.http.client.Request.Builder.prepareHead;
 import static com.facebook.presto.failureDetector.FailureDetector.State.ALIVE;
 import static com.facebook.presto.failureDetector.FailureDetector.State.GONE;
@@ -94,6 +95,7 @@ public class HeartbeatFailureDetector
     private final boolean isEnabled;
     private final Duration warmupInterval;
     private final Duration gcGraceInterval;
+    private final int exponentialDecaySeconds;
     private final boolean httpsRequired;
 
     private final AtomicBoolean started = new AtomicBoolean();
@@ -120,6 +122,7 @@ public class HeartbeatFailureDetector
         this.heartbeat = failureDetectorConfig.getHeartbeatInterval();
         this.warmupInterval = failureDetectorConfig.getWarmupInterval();
         this.gcGraceInterval = failureDetectorConfig.getExpirationGraceInterval();
+        this.exponentialDecaySeconds = failureDetectorConfig.getExponentialDecaySeconds();
 
         this.isEnabled = failureDetectorConfig.isEnabled();
 
@@ -257,7 +260,8 @@ public class HeartbeatFailureDetector
                 URI uri = getHttpUri(service);
 
                 if (uri != null) {
-                    tasks.put(service.getId(), new MonitoringTask(service, uri));
+                    URI pingURI = uriBuilderFrom(uri).appendPath("/v1/status").build();
+                    tasks.put(service.getId(), new MonitoringTask(service, pingURI));
                 }
             }
 
@@ -301,7 +305,7 @@ public class HeartbeatFailureDetector
         {
             this.uri = uri;
             this.service = service;
-            this.stats = new Stats(uri);
+            this.stats = new Stats(uri, exponentialDecaySeconds);
         }
 
         public Stats getStats()
@@ -404,9 +408,9 @@ public class HeartbeatFailureDetector
         private final long start = System.nanoTime();
         private final URI uri;
 
-        private final DecayCounter recentRequests = new DecayCounter(ExponentialDecay.oneMinute());
-        private final DecayCounter recentFailures = new DecayCounter(ExponentialDecay.oneMinute());
-        private final DecayCounter recentSuccesses = new DecayCounter(ExponentialDecay.oneMinute());
+        private final DecayCounter recentRequests;
+        private final DecayCounter recentFailures;
+        private final DecayCounter recentSuccesses;
         private final AtomicReference<DateTime> lastRequestTime = new AtomicReference<>();
         private final AtomicReference<DateTime> lastResponseTime = new AtomicReference<>();
         private final AtomicReference<Exception> lastFailureException = new AtomicReference<>();
@@ -414,9 +418,12 @@ public class HeartbeatFailureDetector
         @GuardedBy("this")
         private final Map<Class<? extends Throwable>, DecayCounter> failureCountByType = new HashMap<>();
 
-        public Stats(URI uri)
+        public Stats(URI uri, int exponentialDecaySeconds)
         {
             this.uri = uri;
+            this.recentRequests = new DecayCounter(ExponentialDecay.seconds(exponentialDecaySeconds));
+            this.recentFailures = new DecayCounter(ExponentialDecay.seconds(exponentialDecaySeconds));
+            this.recentSuccesses = new DecayCounter(ExponentialDecay.seconds(exponentialDecaySeconds));
         }
 
         public void recordStart()

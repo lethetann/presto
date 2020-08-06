@@ -23,24 +23,25 @@ import com.facebook.presto.bytecode.Scope;
 import com.facebook.presto.bytecode.Variable;
 import com.facebook.presto.bytecode.control.ForLoop;
 import com.facebook.presto.bytecode.control.IfStatement;
+import com.facebook.presto.common.PageBuilder;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.function.QualifiedFunctionName;
+import com.facebook.presto.common.function.SqlFunctionProperties;
+import com.facebook.presto.common.type.MapType;
+import com.facebook.presto.common.type.StandardTypes;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeManager;
+import com.facebook.presto.common.type.TypeSignatureParameter;
 import com.facebook.presto.metadata.BoundVariables;
 import com.facebook.presto.metadata.FunctionManager;
 import com.facebook.presto.metadata.SqlScalarFunction;
 import com.facebook.presto.operator.aggregation.TypedSet;
-import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.ErrorCodeSupplier;
-import com.facebook.presto.spi.PageBuilder;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
 import com.facebook.presto.spi.function.FunctionKind;
-import com.facebook.presto.spi.function.QualifiedFunctionName;
 import com.facebook.presto.spi.function.Signature;
-import com.facebook.presto.spi.type.MapType;
-import com.facebook.presto.spi.type.StandardTypes;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeManager;
-import com.facebook.presto.spi.type.TypeSignatureParameter;
+import com.facebook.presto.spi.function.SqlFunctionVisibility;
 import com.facebook.presto.sql.gen.CallSiteBinder;
 import com.facebook.presto.sql.gen.SqlTypeBytecodeExpression;
 import com.facebook.presto.sql.gen.lambda.BinaryFunctionInterface;
@@ -70,13 +71,13 @@ import static com.facebook.presto.bytecode.expression.BytecodeExpressions.newArr
 import static com.facebook.presto.bytecode.expression.BytecodeExpressions.newInstance;
 import static com.facebook.presto.bytecode.expression.BytecodeExpressions.subtract;
 import static com.facebook.presto.bytecode.instruction.VariableInstruction.incrementVariable;
+import static com.facebook.presto.common.type.TypeSignature.parseTypeSignature;
 import static com.facebook.presto.metadata.BuiltInFunctionNamespaceManager.DEFAULT_NAMESPACE;
 import static com.facebook.presto.operator.scalar.BuiltInScalarFunctionImplementation.ArgumentProperty.functionTypeArgumentProperty;
 import static com.facebook.presto.operator.scalar.BuiltInScalarFunctionImplementation.ArgumentProperty.valueTypeArgumentProperty;
 import static com.facebook.presto.operator.scalar.BuiltInScalarFunctionImplementation.NullConvention.RETURN_NULL_ON_NULL;
 import static com.facebook.presto.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
 import static com.facebook.presto.spi.function.Signature.typeVariable;
-import static com.facebook.presto.spi.type.TypeSignature.parseTypeSignature;
 import static com.facebook.presto.sql.gen.SqlTypeBytecodeExpression.constantType;
 import static com.facebook.presto.type.UnknownType.UNKNOWN;
 import static com.facebook.presto.util.CompilerUtils.defineClass;
@@ -102,9 +103,9 @@ public final class MapTransformKeyFunction
     }
 
     @Override
-    public boolean isHidden()
+    public SqlFunctionVisibility getVisibility()
     {
-        return false;
+        return SqlFunctionVisibility.PUBLIC;
     }
 
     @Override
@@ -157,14 +158,14 @@ public final class MapTransformKeyFunction
         definition.declareDefaultConstructor(a(PRIVATE));
 
         Parameter state = arg("state", Object.class);
-        Parameter session = arg("session", ConnectorSession.class);
+        Parameter properties = arg("properties", SqlFunctionProperties.class);
         Parameter block = arg("block", Block.class);
         Parameter function = arg("function", BinaryFunctionInterface.class);
         MethodDefinition method = definition.declareMethod(
                 a(PUBLIC, STATIC),
                 "transform",
                 type(Block.class),
-                ImmutableList.of(state, session, block, function));
+                ImmutableList.of(state, properties, block, function));
 
         BytecodeBlock body = method.getBody();
         Scope scope = method.getScope();
@@ -257,7 +258,7 @@ public final class MapTransformKeyFunction
                                     "format",
                                     String.class,
                                     constantString("Duplicate keys (%s) are not allowed"),
-                                    newArray(type(Object[].class), ImmutableList.of(transformedKeySqlType.invoke("getObjectValue", Object.class, session, blockBuilder.cast(Block.class), position))))))
+                                    newArray(type(Object[].class), ImmutableList.of(transformedKeySqlType.invoke("getObjectValue", Object.class, properties, blockBuilder.cast(Block.class), position))))))
                     .throwObject();
         }
         else {
@@ -278,7 +279,8 @@ public final class MapTransformKeyFunction
                         .append(new IfStatement()
                                 .condition(typedSet.invoke("contains", boolean.class, blockBuilder.cast(Block.class), position))
                                 .ifTrue(throwDuplicatedKeyException)
-                                .ifFalse(typedSet.invoke("add", void.class, blockBuilder.cast(Block.class), position)))));
+                                .ifFalse(typedSet.invoke("add", boolean.class, blockBuilder.cast(Block.class), position)
+                                .pop()))));
 
         body.append(mapBlockBuilder
                 .invoke("closeEntry", BlockBuilder.class)
@@ -293,6 +295,6 @@ public final class MapTransformKeyFunction
                 .ret());
 
         Class<?> generatedClass = defineClass(definition, Object.class, binder.getBindings(), MapTransformKeyFunction.class.getClassLoader());
-        return methodHandle(generatedClass, "transform", Object.class, ConnectorSession.class, Block.class, BinaryFunctionInterface.class);
+        return methodHandle(generatedClass, "transform", Object.class, SqlFunctionProperties.class, Block.class, BinaryFunctionInterface.class);
     }
 }

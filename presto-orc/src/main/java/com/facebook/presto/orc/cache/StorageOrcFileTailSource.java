@@ -46,7 +46,7 @@ public class StorageOrcFileTailSource
     private static final int CURRENT_MINOR_VERSION = 12;
 
     @Override
-    public OrcFileTail getOrcFileTail(OrcDataSource orcDataSource, MetadataReader metadataReader, Optional<OrcWriteValidation> writeValidation)
+    public OrcFileTail getOrcFileTail(OrcDataSource orcDataSource, MetadataReader metadataReader, Optional<OrcWriteValidation> writeValidation, boolean cacheable)
             throws IOException
     {
         long size = orcDataSource.getSize();

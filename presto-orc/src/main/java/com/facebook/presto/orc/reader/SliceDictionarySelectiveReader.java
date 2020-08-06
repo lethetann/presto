@@ -13,8 +13,16 @@
  */
 package com.facebook.presto.orc.reader;
 
-import com.facebook.presto.memory.context.LocalMemoryContext;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockLease;
+import com.facebook.presto.common.block.ClosingBlockLease;
+import com.facebook.presto.common.block.DictionaryBlock;
+import com.facebook.presto.common.block.RunLengthEncodedBlock;
+import com.facebook.presto.common.block.VariableWidthBlock;
+import com.facebook.presto.common.type.Chars;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.orc.OrcCorruptionException;
+import com.facebook.presto.orc.OrcLocalMemoryContext;
 import com.facebook.presto.orc.StreamDescriptor;
 import com.facebook.presto.orc.TupleDomainFilter;
 import com.facebook.presto.orc.metadata.ColumnEncoding;
@@ -25,14 +33,6 @@ import com.facebook.presto.orc.stream.InputStreamSource;
 import com.facebook.presto.orc.stream.InputStreamSources;
 import com.facebook.presto.orc.stream.LongInputStream;
 import com.facebook.presto.orc.stream.RowGroupDictionaryLengthInputStream;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockLease;
-import com.facebook.presto.spi.block.ClosingBlockLease;
-import com.facebook.presto.spi.block.DictionaryBlock;
-import com.facebook.presto.spi.block.RunLengthEncodedBlock;
-import com.facebook.presto.spi.block.VariableWidthBlock;
-import com.facebook.presto.spi.type.Chars;
-import com.facebook.presto.spi.type.Type;
 import io.airlift.slice.Slice;
 import org.openjdk.jol.info.ClassLayout;
 
@@ -40,10 +40,10 @@ import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.Arrays;
-import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
-import static com.facebook.presto.array.Arrays.ensureCapacity;
+import static com.facebook.presto.orc.array.Arrays.ensureCapacity;
 import static com.facebook.presto.orc.metadata.OrcType.OrcTypeKind.CHAR;
 import static com.facebook.presto.orc.metadata.Stream.StreamKind.DATA;
 import static com.facebook.presto.orc.metadata.Stream.StreamKind.DICTIONARY_DATA;
@@ -116,7 +116,7 @@ public class SliceDictionarySelectiveReader
     private LongInputStream dataStream;
 
     private boolean rowGroupOpen;
-    private LocalMemoryContext systemMemoryContext;
+    private OrcLocalMemoryContext systemMemoryContext;
 
     private int[] values;
     private boolean allNulls;
@@ -124,7 +124,7 @@ public class SliceDictionarySelectiveReader
     private int outputPositionCount;
     private boolean valuesInUse;
 
-    public SliceDictionarySelectiveReader(StreamDescriptor streamDescriptor, Optional<TupleDomainFilter> filter, Optional<Type> outputType, LocalMemoryContext systemMemoryContext)
+    public SliceDictionarySelectiveReader(StreamDescriptor streamDescriptor, Optional<TupleDomainFilter> filter, Optional<Type> outputType, OrcLocalMemoryContext systemMemoryContext)
     {
         this.streamDescriptor = requireNonNull(streamDescriptor, "streamDescriptor is null");
         this.filter = requireNonNull(filter, "filter is null").orElse(null);
@@ -561,7 +561,7 @@ public class SliceDictionarySelectiveReader
     }
 
     @Override
-    public void startStripe(InputStreamSources dictionaryStreamSources, List<ColumnEncoding> encoding)
+    public void startStripe(InputStreamSources dictionaryStreamSources, Map<Integer, ColumnEncoding> encoding)
     {
         stripeDictionaryDataStreamSource = dictionaryStreamSources.getInputStreamSource(streamDescriptor, DICTIONARY_DATA, ByteArrayInputStream.class);
         stripeDictionaryLengthStreamSource = dictionaryStreamSources.getInputStreamSource(streamDescriptor, LENGTH, LongInputStream.class);
@@ -609,6 +609,13 @@ public class SliceDictionarySelectiveReader
     @Override
     public void close()
     {
+        dictionary = null;
+        currentDictionaryData = null;
+        rowGroupDictionaryLength = null;
+        stripeDictionaryData = null;
+        stripeDictionaryLength = null;
+        values = null;
+        outputPositions = null;
         systemMemoryContext.close();
     }
 

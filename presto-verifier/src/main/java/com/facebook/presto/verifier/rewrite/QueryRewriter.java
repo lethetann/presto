@@ -13,7 +13,17 @@
  */
 package com.facebook.presto.verifier.rewrite;
 
+import com.facebook.presto.common.type.ArrayType;
+import com.facebook.presto.common.type.DecimalType;
+import com.facebook.presto.common.type.MapType;
+import com.facebook.presto.common.type.RowType;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeManager;
+import com.facebook.presto.common.type.TypeSignature;
+import com.facebook.presto.common.type.TypeSignatureParameter;
 import com.facebook.presto.sql.parser.SqlParser;
+import com.facebook.presto.sql.tree.AllColumns;
+import com.facebook.presto.sql.tree.Cast;
 import com.facebook.presto.sql.tree.CreateTable;
 import com.facebook.presto.sql.tree.CreateTableAsSelect;
 import com.facebook.presto.sql.tree.DropTable;
@@ -25,6 +35,9 @@ import com.facebook.presto.sql.tree.Property;
 import com.facebook.presto.sql.tree.QualifiedName;
 import com.facebook.presto.sql.tree.Query;
 import com.facebook.presto.sql.tree.QuerySpecification;
+import com.facebook.presto.sql.tree.Select;
+import com.facebook.presto.sql.tree.SelectItem;
+import com.facebook.presto.sql.tree.SingleColumn;
 import com.facebook.presto.sql.tree.Statement;
 import com.facebook.presto.verifier.framework.ClusterType;
 import com.facebook.presto.verifier.framework.QueryBundle;
@@ -35,6 +48,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import org.intellij.lang.annotations.Language;
 
+import java.sql.ResultSetMetaData;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -44,10 +58,22 @@ import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.DateType.DATE;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.RowType.Field;
+import static com.facebook.presto.common.type.StandardTypes.MAP;
+import static com.facebook.presto.common.type.TimeType.TIME;
+import static com.facebook.presto.common.type.TimestampType.TIMESTAMP;
+import static com.facebook.presto.common.type.TimestampWithTimeZoneType.TIMESTAMP_WITH_TIME_ZONE;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.facebook.presto.sql.tree.LikeClause.PropertiesOption.INCLUDING;
+import static com.facebook.presto.type.UnknownType.UNKNOWN;
 import static com.facebook.presto.verifier.framework.QueryStage.REWRITE;
 import static com.facebook.presto.verifier.framework.QueryType.Category.DATA_PRODUCING;
 import static com.facebook.presto.verifier.framework.VerifierUtil.PARSING_OPTIONS;
+import static com.facebook.presto.verifier.framework.VerifierUtil.getColumnNames;
+import static com.facebook.presto.verifier.framework.VerifierUtil.getColumnTypes;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
@@ -61,16 +87,23 @@ import static java.util.UUID.randomUUID;
 public class QueryRewriter
 {
     private final SqlParser sqlParser;
+    private final TypeManager typeManager;
     private final PrestoAction prestoAction;
-    private final List<Property> tablePropertyOverrides;
     private final Map<ClusterType, QualifiedName> prefixes;
+    private final Map<ClusterType, List<Property>> tableProperties;
 
-    public QueryRewriter(SqlParser sqlParser, PrestoAction prestoAction, List<Property> tablePropertyOverrides, Map<ClusterType, QualifiedName> tablePrefixes)
+    public QueryRewriter(
+            SqlParser sqlParser,
+            TypeManager typeManager,
+            PrestoAction prestoAction,
+            Map<ClusterType, QualifiedName> tablePrefixes,
+            Map<ClusterType, List<Property>> tableProperties)
     {
         this.sqlParser = requireNonNull(sqlParser, "sqlParser is null");
+        this.typeManager = requireNonNull(typeManager, "typeManager is null");
         this.prestoAction = requireNonNull(prestoAction, "prestoAction is null");
-        this.tablePropertyOverrides = requireNonNull(tablePropertyOverrides, "tablePropertyOverrides is null");
         this.prefixes = ImmutableMap.copyOf(tablePrefixes);
+        this.tableProperties = ImmutableMap.copyOf(tableProperties);
     }
 
     public QueryBundle rewriteQuery(@Language("SQL") String query, ClusterType clusterType)
@@ -81,6 +114,7 @@ public class QueryRewriter
         checkArgument(queryType.getCategory() == DATA_PRODUCING, "Unsupported statement type: %s", queryType);
 
         QualifiedName prefix = prefixes.get(clusterType);
+        List<Property> properties = tableProperties.get(clusterType);
         if (statement instanceof CreateTableAsSelect) {
             CreateTableAsSelect createTableAsSelect = (CreateTableAsSelect) statement;
             QualifiedName temporaryTableName = generateTemporaryTableName(Optional.of(createTableAsSelect.getName()), prefix);
@@ -91,7 +125,7 @@ public class QueryRewriter
                             temporaryTableName,
                             createTableAsSelect.getQuery(),
                             createTableAsSelect.isNotExists(),
-                            applyPropertyOverride(createTableAsSelect.getProperties(), tablePropertyOverrides),
+                            applyPropertyOverride(createTableAsSelect.getProperties(), properties),
                             createTableAsSelect.isWithData(),
                             createTableAsSelect.getColumnAliases(),
                             createTableAsSelect.getComment()),
@@ -109,7 +143,7 @@ public class QueryRewriter
                                     temporaryTableName,
                                     ImmutableList.of(new LikeClause(originalTableName, Optional.of(INCLUDING))),
                                     false,
-                                    tablePropertyOverrides,
+                                    properties,
                                     Optional.empty())),
                     new Insert(
                             temporaryTableName,
@@ -120,16 +154,19 @@ public class QueryRewriter
         }
         if (statement instanceof Query) {
             QualifiedName temporaryTableName = generateTemporaryTableName(Optional.empty(), prefix);
+            ResultSetMetaData metadata = getResultMetadata((Query) statement);
+            List<Identifier> columnAliases = generateStorageColumnAliases(metadata);
+            Query rewrite = rewriteNonStorableColumns((Query) statement, metadata);
             return new QueryBundle(
                     temporaryTableName,
                     ImmutableList.of(),
                     new CreateTableAsSelect(
                             temporaryTableName,
-                            (Query) statement,
+                            rewrite,
                             false,
-                            tablePropertyOverrides,
+                            properties,
                             true,
-                            Optional.of(generateStorageColumnAliases((Query) statement)),
+                            Optional.of(columnAliases),
                             Optional.empty()),
                     ImmutableList.of(new DropTable(temporaryTableName, true)),
                     clusterType);
@@ -151,12 +188,12 @@ public class QueryRewriter
         return QualifiedName.of(parts);
     }
 
-    private List<Identifier> generateStorageColumnAliases(Query query)
+    private List<Identifier> generateStorageColumnAliases(ResultSetMetaData metadata)
     {
         ImmutableList.Builder<Identifier> aliases = ImmutableList.builder();
         Set<String> usedAliases = new HashSet<>();
 
-        for (String columnName : getColumnNames(query)) {
+        for (String columnName : getColumnNames(metadata)) {
             columnName = sanitizeColumnName(columnName);
             String alias = columnName;
             int postfix = 1;
@@ -170,7 +207,7 @@ public class QueryRewriter
         return aliases.build();
     }
 
-    private List<String> getColumnNames(Query query)
+    private ResultSetMetaData getResultMetadata(Query query)
     {
         Query zeroRowQuery;
         if (query.getQueryBody() instanceof QuerySpecification) {
@@ -191,7 +228,98 @@ public class QueryRewriter
         else {
             zeroRowQuery = new Query(query.getWith(), query.getQueryBody(), Optional.empty(), Optional.of("0"));
         }
-        return prestoAction.execute(zeroRowQuery, REWRITE, ResultSetConverter.DEFAULT).getColumnNames();
+        return prestoAction.execute(zeroRowQuery, REWRITE, ResultSetConverter.DEFAULT).getMetadata();
+    }
+
+    private Query rewriteNonStorableColumns(Query query, ResultSetMetaData metadata)
+    {
+        // Skip if all columns are storable
+        List<Type> columnTypes = getColumnTypes(typeManager, metadata);
+        if (columnTypes.stream().noneMatch(type -> getColumnTypeRewrite(type).isPresent())) {
+            return query;
+        }
+
+        // Cannot handle SELECT query with top-level SetOperation
+        if (!(query.getQueryBody() instanceof QuerySpecification)) {
+            return query;
+        }
+
+        QuerySpecification querySpecification = (QuerySpecification) query.getQueryBody();
+        List<SelectItem> selectItems = querySpecification.getSelect().getSelectItems();
+        // Cannot handle SELECT *
+        if (selectItems.stream().anyMatch(AllColumns.class::isInstance)) {
+            return query;
+        }
+
+        List<SelectItem> newItems = new ArrayList<>();
+        checkState(selectItems.size() == columnTypes.size(), "SelectItem count (%s) mismatches column count (%s)", selectItems.size(), columnTypes.size());
+        for (int i = 0; i < selectItems.size(); i++) {
+            SingleColumn singleColumn = (SingleColumn) selectItems.get(i);
+            Optional<Type> columnTypeRewrite = getColumnTypeRewrite(columnTypes.get(i));
+            if (columnTypeRewrite.isPresent()) {
+                newItems.add(new SingleColumn(new Cast(singleColumn.getExpression(), columnTypeRewrite.get().getTypeSignature().toString()), singleColumn.getAlias()));
+            }
+            else {
+                newItems.add(singleColumn);
+            }
+        }
+
+        return new Query(
+                query.getWith(),
+                new QuerySpecification(
+                        new Select(querySpecification.getSelect().isDistinct(), newItems),
+                        querySpecification.getFrom(),
+                        querySpecification.getWhere(),
+                        querySpecification.getGroupBy(),
+                        querySpecification.getHaving(),
+                        querySpecification.getOrderBy(),
+                        querySpecification.getLimit()),
+                query.getOrderBy(),
+                query.getLimit());
+    }
+
+    private Optional<Type> getColumnTypeRewrite(Type type)
+    {
+        if (type.equals(DATE) || type.equals(TIME)) {
+            return Optional.of(TIMESTAMP);
+        }
+        if (type.equals(TIMESTAMP_WITH_TIME_ZONE)) {
+            return Optional.of(VARCHAR);
+        }
+        if (type.equals(UNKNOWN)) {
+            return Optional.of(BIGINT);
+        }
+        if (type instanceof DecimalType) {
+            return Optional.of(DOUBLE);
+        }
+        if (type instanceof ArrayType) {
+            return getColumnTypeRewrite(((ArrayType) type).getElementType()).map(ArrayType::new);
+        }
+        if (type instanceof MapType) {
+            Type keyType = ((MapType) type).getKeyType();
+            Type valueType = ((MapType) type).getValueType();
+            Optional<Type> keyTypeRewrite = getColumnTypeRewrite(keyType);
+            Optional<Type> valueTypeRewrite = getColumnTypeRewrite(valueType);
+            if (keyTypeRewrite.isPresent() || valueTypeRewrite.isPresent()) {
+                return Optional.of(typeManager.getType(new TypeSignature(
+                        MAP,
+                        TypeSignatureParameter.of(keyTypeRewrite.orElse(keyType).getTypeSignature()),
+                        TypeSignatureParameter.of(valueTypeRewrite.orElse(valueType).getTypeSignature()))));
+            }
+            return Optional.empty();
+        }
+        if (type instanceof RowType) {
+            List<Field> fields = ((RowType) type).getFields();
+            List<Field> fieldsRewrite = new ArrayList<>();
+            boolean rewrite = false;
+            for (Field field : fields) {
+                Optional<Type> fieldTypeRewrite = getColumnTypeRewrite(field.getType());
+                rewrite = rewrite || fieldTypeRewrite.isPresent();
+                fieldsRewrite.add(new Field(field.getName(), fieldTypeRewrite.orElse(field.getType())));
+            }
+            return rewrite ? Optional.of(RowType.from(fieldsRewrite)) : Optional.empty();
+        }
+        return Optional.empty();
     }
 
     private static String sanitizeColumnName(String columnName)

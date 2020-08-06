@@ -16,6 +16,7 @@ package com.facebook.presto.tests;
 import com.facebook.airlift.testing.Assertions;
 import com.facebook.presto.Session;
 import com.facebook.presto.SystemSessionProperties;
+import com.facebook.presto.dispatcher.DispatchManager;
 import com.facebook.presto.execution.QueryInfo;
 import com.facebook.presto.execution.QueryManager;
 import com.facebook.presto.server.BasicQueryInfo;
@@ -37,8 +38,8 @@ import java.util.Optional;
 import java.util.function.Supplier;
 
 import static com.facebook.presto.SystemSessionProperties.QUERY_MAX_MEMORY;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.facebook.presto.connector.informationSchema.InformationSchemaMetadata.INFORMATION_SCHEMA;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
 import static com.facebook.presto.testing.MaterializedResult.resultBuilder;
 import static com.facebook.presto.testing.TestingAccessControlManager.TestingPrivilegeType.ADD_COLUMN;
 import static com.facebook.presto.testing.TestingAccessControlManager.TestingPrivilegeType.CREATE_TABLE;
@@ -817,8 +818,9 @@ public abstract class AbstractTestDistributedQueries
             // The completed queries counter is updated in a final query info listener, which is called eventually.
             // Therefore, here we wait until the value of this counter gets stable.
 
-            long beforeCompletedQueriesCount = waitUntilStable(() -> queryManager.getStats().getCompletedQueries().getTotalCount(), new Duration(5, SECONDS));
-            long beforeSubmittedQueriesCount = queryManager.getStats().getSubmittedQueries().getTotalCount();
+            DispatchManager dispatchManager = ((DistributedQueryRunner) getQueryRunner()).getCoordinator().getDispatchManager();
+            long beforeCompletedQueriesCount = waitUntilStable(() -> dispatchManager.getStats().getCompletedQueries().getTotalCount(), new Duration(5, SECONDS));
+            long beforeSubmittedQueriesCount = dispatchManager.getStats().getSubmittedQueries().getTotalCount();
             assertUpdate("CREATE TABLE test_query_logging_count AS SELECT 1 foo_1, 2 foo_2_4", 1);
             assertQuery("SELECT foo_1, foo_2_4 FROM test_query_logging_count", "SELECT 1, 2");
             assertUpdate("DROP TABLE test_query_logging_count");
@@ -826,9 +828,9 @@ public abstract class AbstractTestDistributedQueries
 
             // TODO: Figure out a better way of synchronization
             assertUntilTimeout(
-                    () -> assertEquals(queryManager.getStats().getCompletedQueries().getTotalCount() - beforeCompletedQueriesCount, 4),
+                    () -> assertEquals(dispatchManager.getStats().getCompletedQueries().getTotalCount() - beforeCompletedQueriesCount, 4),
                     new Duration(1, MINUTES));
-            assertEquals(queryManager.getStats().getSubmittedQueries().getTotalCount() - beforeSubmittedQueriesCount, 4);
+            assertEquals(dispatchManager.getStats().getSubmittedQueries().getTotalCount() - beforeSubmittedQueriesCount, 4);
         });
     }
 
@@ -987,8 +989,22 @@ public abstract class AbstractTestDistributedQueries
                 "SELECT * FROM test_nested_view_access",
                 privilege(getSession().getUser(), "test_view_access", SELECT_COLUMN));
 
+        // verify that INVOKER security runs as session user
+        assertAccessAllowed(
+                viewOwnerSession,
+                "CREATE VIEW test_invoker_view_access SECURITY INVOKER AS SELECT * FROM orders",
+                privilege("orders", CREATE_VIEW_WITH_SELECT_COLUMNS));
+        assertAccessAllowed(
+                "SELECT * FROM test_invoker_view_access",
+                privilege(viewOwnerSession.getUser(), "orders", SELECT_COLUMN));
+        assertAccessDenied(
+                "SELECT * FROM test_invoker_view_access",
+                "Cannot select from columns \\[.*\\] in table .*.orders.*",
+                privilege(getSession().getUser(), "orders", SELECT_COLUMN));
+
         assertAccessAllowed(nestedViewOwnerSession, "DROP VIEW test_nested_view_access");
         assertAccessAllowed(viewOwnerSession, "DROP VIEW test_view_access");
+        assertAccessAllowed(viewOwnerSession, "DROP VIEW test_invoker_view_access");
     }
 
     @Test
@@ -1016,7 +1032,7 @@ public abstract class AbstractTestDistributedQueries
         String sql = "CREATE TABLE test_written_stats AS SELECT * FROM nation";
         DistributedQueryRunner distributedQueryRunner = (DistributedQueryRunner) getQueryRunner();
         ResultWithQueryId<MaterializedResult> resultResultWithQueryId = distributedQueryRunner.executeWithQueryId(getSession(), sql);
-        QueryInfo queryInfo = distributedQueryRunner.getQueryInfo(resultResultWithQueryId.getQueryId());
+        QueryInfo queryInfo = distributedQueryRunner.getCoordinator().getQueryManager().getFullQueryInfo(resultResultWithQueryId.getQueryId());
 
         assertEquals(queryInfo.getQueryStats().getOutputPositions(), 1L);
         assertEquals(queryInfo.getQueryStats().getWrittenOutputPositions(), 25L);
@@ -1024,7 +1040,7 @@ public abstract class AbstractTestDistributedQueries
 
         sql = "INSERT INTO test_written_stats SELECT * FROM nation LIMIT 10";
         resultResultWithQueryId = distributedQueryRunner.executeWithQueryId(getSession(), sql);
-        queryInfo = distributedQueryRunner.getQueryInfo(resultResultWithQueryId.getQueryId());
+        queryInfo = distributedQueryRunner.getCoordinator().getQueryManager().getFullQueryInfo(resultResultWithQueryId.getQueryId());
 
         assertEquals(queryInfo.getQueryStats().getOutputPositions(), 1L);
         assertEquals(queryInfo.getQueryStats().getWrittenOutputPositions(), 10L);

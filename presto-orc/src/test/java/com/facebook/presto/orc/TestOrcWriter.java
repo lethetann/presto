@@ -13,17 +13,17 @@
  */
 package com.facebook.presto.orc;
 
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
 import com.facebook.presto.orc.OrcWriteValidation.OrcWriteValidationMode;
 import com.facebook.presto.orc.cache.StorageOrcFileTailSource;
 import com.facebook.presto.orc.metadata.Footer;
 import com.facebook.presto.orc.metadata.Stream;
 import com.facebook.presto.orc.metadata.StripeFooter;
 import com.facebook.presto.orc.metadata.StripeInformation;
-import com.facebook.presto.orc.stream.OrcDataOutput;
+import com.facebook.presto.orc.stream.DataOutput;
 import com.facebook.presto.orc.stream.OrcInputStream;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.slice.Slices;
@@ -37,14 +37,15 @@ import java.util.List;
 import java.util.Optional;
 
 import static com.facebook.airlift.testing.Assertions.assertGreaterThanOrEqual;
-import static com.facebook.presto.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
+import static com.facebook.presto.orc.DwrfEncryptionProvider.NO_ENCRYPTION;
+import static com.facebook.presto.orc.NoopOrcAggregatedMemoryContext.NOOP_ORC_AGGREGATED_MEMORY_CONTEXT;
 import static com.facebook.presto.orc.OrcEncoding.ORC;
 import static com.facebook.presto.orc.OrcTester.HIVE_STORAGE_TIME_ZONE;
 import static com.facebook.presto.orc.StripeReader.isIndexStream;
 import static com.facebook.presto.orc.TestingOrcPredicate.ORC_ROW_GROUP_SIZE;
 import static com.facebook.presto.orc.TestingOrcPredicate.ORC_STRIPE_SIZE;
 import static com.facebook.presto.orc.metadata.CompressionKind.NONE;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
 import static io.airlift.units.DataSize.Unit.MEGABYTE;
 import static java.lang.Math.toIntExact;
 import static org.testng.Assert.assertFalse;
@@ -58,11 +59,13 @@ public class TestOrcWriter
         for (OrcWriteValidationMode validationMode : OrcWriteValidationMode.values()) {
             TempFile tempFile = new TempFile();
             OrcWriter writer = new OrcWriter(
-                    new OutputStreamOrcDataSink(new FileOutputStream(tempFile.getFile())),
+                    new OutputStreamDataSink(new FileOutputStream(tempFile.getFile())),
                     ImmutableList.of("test1", "test2", "test3", "test4", "test5"),
                     ImmutableList.of(VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR),
                     ORC,
                     NONE,
+                    Optional.empty(),
+                    NO_ENCRYPTION,
                     new OrcWriterOptions()
                             .withStripeMinSize(new DataSize(0, MEGABYTE))
                             .withStripeMaxSize(new DataSize(32, MEGABYTE))
@@ -103,17 +106,21 @@ public class TestOrcWriter
                     ORC,
                     new StorageOrcFileTailSource(),
                     new StorageStripeMetadataSource(),
+                    NOOP_ORC_AGGREGATED_MEMORY_CONTEXT,
                     new OrcReaderOptions(
                             dataSize,
                             dataSize,
                             dataSize,
-                            false)).getFooter();
+                            false),
+                    false,
+                    NO_ENCRYPTION
+            ).getFooter();
 
             for (StripeInformation stripe : footer.getStripes()) {
                 // read the footer
                 byte[] tailBuffer = new byte[toIntExact(stripe.getFooterLength())];
                 orcDataSource.readFully(stripe.getOffset() + stripe.getIndexLength() + stripe.getDataLength(), tailBuffer);
-                try (InputStream inputStream = new OrcInputStream(orcDataSource.getId(), Slices.wrappedBuffer(tailBuffer).getInput(), Optional.empty(), newSimpleAggregatedMemoryContext(), tailBuffer.length)) {
+                try (InputStream inputStream = new OrcInputStream(orcDataSource.getId(), Slices.wrappedBuffer(tailBuffer).getInput(), Optional.empty(), Optional.empty(), new TestingHiveOrcAggregatedMemoryContext(), tailBuffer.length)) {
                     StripeFooter stripeFooter = ORC.createMetadataReader().readStripeFooter(footer.getTypes(), inputStream);
 
                     int size = 0;
@@ -138,11 +145,13 @@ public class TestOrcWriter
             throws IOException
     {
         OrcWriter writer = new OrcWriter(
-                new MockOrcDataSink(),
+                new MockDataSink(),
                 ImmutableList.of("test1"),
                 ImmutableList.of(VARCHAR),
                 ORC,
                 NONE,
+                Optional.empty(),
+                NO_ENCRYPTION,
                 new OrcWriterOptions()
                         .withStripeMinSize(new DataSize(0, MEGABYTE))
                         .withStripeMaxSize(new DataSize(32, MEGABYTE))
@@ -175,10 +184,10 @@ public class TestOrcWriter
         }
     }
 
-    public static class MockOrcDataSink
-            implements OrcDataSink
+    public static class MockDataSink
+            implements DataSink
     {
-        public MockOrcDataSink()
+        public MockDataSink()
         {
         }
 
@@ -195,7 +204,7 @@ public class TestOrcWriter
         }
 
         @Override
-        public void write(List<OrcDataOutput> outputData)
+        public void write(List<DataOutput> outputData)
                 throws IOException
         {
             throw new IOException("Dummy exception from mocked instance");

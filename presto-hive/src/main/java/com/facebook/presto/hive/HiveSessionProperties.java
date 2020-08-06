@@ -16,6 +16,7 @@ package com.facebook.presto.hive;
 import com.facebook.presto.orc.OrcWriteValidation.OrcWriteValidationMode;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.PrestoException;
+import com.facebook.presto.spi.schedule.NodeSelectionStrategy;
 import com.facebook.presto.spi.session.PropertyMetadata;
 import com.google.common.collect.ImmutableList;
 import io.airlift.units.DataSize;
@@ -25,15 +26,16 @@ import javax.inject.Inject;
 import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
 
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
+import static com.facebook.presto.common.type.VarcharType.createUnboundedVarcharType;
 import static com.facebook.presto.hive.HiveSessionProperties.InsertExistingPartitionsBehavior.APPEND;
 import static com.facebook.presto.hive.HiveSessionProperties.InsertExistingPartitionsBehavior.ERROR;
+import static com.facebook.presto.hive.HiveSessionProperties.InsertExistingPartitionsBehavior.OVERWRITE;
 import static com.facebook.presto.spi.StandardErrorCode.INVALID_SESSION_PROPERTY;
 import static com.facebook.presto.spi.session.PropertyMetadata.booleanProperty;
 import static com.facebook.presto.spi.session.PropertyMetadata.integerProperty;
 import static com.facebook.presto.spi.session.PropertyMetadata.stringProperty;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
-import static com.facebook.presto.spi.type.VarcharType.createUnboundedVarcharType;
 import static com.google.common.base.Preconditions.checkArgument;
 import static java.lang.String.format;
 import static java.util.Locale.ENGLISH;
@@ -41,8 +43,9 @@ import static java.util.Locale.ENGLISH;
 public final class HiveSessionProperties
 {
     private static final String IGNORE_TABLE_BUCKETING = "ignore_table_bucketing";
+    private static final String MIN_BUCKET_COUNT_TO_NOT_IGNORE_TABLE_BUCKETING = "min_bucket_count_to_not_ignore_table_bucketing";
     private static final String BUCKET_EXECUTION_ENABLED = "bucket_execution_enabled";
-    private static final String FORCE_LOCAL_SCHEDULING = "force_local_scheduling";
+    private static final String NODE_SELECTION_STRATEGY = "node_selection_strategy";
     private static final String INSERT_EXISTING_PARTITIONS_BEHAVIOR = "insert_existing_partitions_behavior";
     private static final String ORC_BLOOM_FILTERS_ENABLED = "orc_bloom_filters_enabled";
     private static final String ORC_MAX_MERGE_DISTANCE = "orc_max_merge_distance";
@@ -61,14 +64,17 @@ public final class HiveSessionProperties
     private static final String ORC_OPTIMIZED_WRITER_MAX_STRIPE_SIZE = "orc_optimized_writer_max_stripe_size";
     private static final String ORC_OPTIMIZED_WRITER_MAX_STRIPE_ROWS = "orc_optimized_writer_max_stripe_rows";
     private static final String ORC_OPTIMIZED_WRITER_MAX_DICTIONARY_MEMORY = "orc_optimized_writer_max_dictionary_memory";
-    private static final String HIVE_STORAGE_FORMAT = "hive_storage_format";
+    private static final String PAGEFILE_WRITER_MAX_STRIPE_SIZE = "pagefile_writer_max_stripe_size";
+    public static final String HIVE_STORAGE_FORMAT = "hive_storage_format";
     private static final String COMPRESSION_CODEC = "compression_codec";
-    private static final String RESPECT_TABLE_FORMAT = "respect_table_format";
+    private static final String ORC_COMPRESSION_CODEC = "orc_compression_codec";
+    public static final String RESPECT_TABLE_FORMAT = "respect_table_format";
     private static final String PARQUET_USE_COLUMN_NAME = "parquet_use_column_names";
     private static final String PARQUET_FAIL_WITH_CORRUPTED_STATISTICS = "parquet_fail_with_corrupted_statistics";
     private static final String PARQUET_MAX_READ_BLOCK_SIZE = "parquet_max_read_block_size";
     private static final String PARQUET_WRITER_BLOCK_SIZE = "parquet_writer_block_size";
     private static final String PARQUET_WRITER_PAGE_SIZE = "parquet_writer_page_size";
+    private static final String PARQUET_OPTIMIZED_WRITER_ENABLED = "parquet_optimized_writer_enabled";
     private static final String MAX_SPLIT_SIZE = "max_split_size";
     private static final String MAX_INITIAL_SPLIT_SIZE = "max_initial_split_size";
     public static final String RCFILE_OPTIMIZED_WRITER_ENABLED = "rcfile_optimized_writer_enabled";
@@ -82,6 +88,7 @@ public final class HiveSessionProperties
     public static final String COLLECT_COLUMN_STATISTICS_ON_WRITE = "collect_column_statistics_on_write";
     private static final String OPTIMIZE_MISMATCHED_BUCKET_COUNT = "optimize_mismatched_bucket_count";
     private static final String S3_SELECT_PUSHDOWN_ENABLED = "s3_select_pushdown_enabled";
+    public static final String SHUFFLE_PARTITIONED_COLUMNS_FOR_TABLE_WRITE = "shuffle_partitioned_columns_for_table_write";
     private static final String TEMPORARY_STAGING_DIRECTORY_ENABLED = "temporary_staging_directory_enabled";
     private static final String TEMPORARY_STAGING_DIRECTORY_PATH = "temporary_staging_directory_path";
     private static final String TEMPORARY_TABLE_SCHEMA = "temporary_table_schema";
@@ -89,9 +96,15 @@ public final class HiveSessionProperties
     private static final String TEMPORARY_TABLE_COMPRESSION_CODEC = "temporary_table_compression_codec";
     public static final String PUSHDOWN_FILTER_ENABLED = "pushdown_filter_enabled";
     public static final String RANGE_FILTERS_ON_SUBSCRIPTS_ENABLED = "range_filters_on_subscripts_enabled";
+    public static final String ADAPTIVE_FILTER_REORDERING_ENABLED = "adaptive_filter_reordering_enabled";
     public static final String VIRTUAL_BUCKET_COUNT = "virtual_bucket_count";
     public static final String MAX_BUCKETS_FOR_GROUPED_EXECUTION = "max_buckets_for_grouped_execution";
     public static final String OFFLINE_DATA_DEBUG_MODE_ENABLED = "offline_data_debug_mode_enabled";
+    public static final String FAIL_FAST_ON_INSERT_INTO_IMMUTABLE_PARTITIONS_ENABLED = "fail_fast_on_insert_into_immutable_partitions_enabled";
+    public static final String USE_LIST_DIRECTORY_CACHE = "use_list_directory_cache";
+    private static final String PARQUET_BATCH_READ_OPTIMIZATION_ENABLED = "parquet_batch_read_optimization_enabled";
+    private static final String PARQUET_BATCH_READER_VERIFICATION_ENABLED = "parquet_batch_reader_verification_enabled";
+    private static final String BUCKET_FUNCTION_TYPE_FOR_EXCHANGE = "bucket_function_type_for_exchange";
 
     private final List<PropertyMetadata<?>> sessionProperties;
 
@@ -122,22 +135,31 @@ public final class HiveSessionProperties
                         "Ignore table bucketing to enable reading from unbucketed partitions",
                         hiveClientConfig.isIgnoreTableBucketing(),
                         false),
+                integerProperty(
+                        MIN_BUCKET_COUNT_TO_NOT_IGNORE_TABLE_BUCKETING,
+                        "Ignore table bucketing when table bucket count is less than the value specified",
+                        hiveClientConfig.getMinBucketCountToNotIgnoreTableBucketing(),
+                        true),
                 booleanProperty(
                         BUCKET_EXECUTION_ENABLED,
                         "Enable bucket-aware execution: only use a single worker per bucket",
                         hiveClientConfig.isBucketExecutionEnabled(),
                         false),
-                booleanProperty(
-                        FORCE_LOCAL_SCHEDULING,
-                        "Only schedule splits on workers colocated with data node",
-                        hiveClientConfig.isForceLocalScheduling(),
-                        false),
+                new PropertyMetadata<>(
+                        NODE_SELECTION_STRATEGY,
+                        "Node affinity selection strategy",
+                        VARCHAR,
+                        NodeSelectionStrategy.class,
+                        hiveClientConfig.getNodeSelectionStrategy(),
+                        false,
+                        value -> NodeSelectionStrategy.valueOf((String) value),
+                        NodeSelectionStrategy::toString),
                 new PropertyMetadata<>(
                         INSERT_EXISTING_PARTITIONS_BEHAVIOR,
                         "Behavior on insert existing partitions; this session property doesn't control behavior on insert existing unpartitioned table",
                         VARCHAR,
                         InsertExistingPartitionsBehavior.class,
-                        hiveClientConfig.isImmutablePartitions() ? ERROR : APPEND,
+                        getDefaultInsertExistingPartitionsBehavior(hiveClientConfig),
                         false,
                         value -> InsertExistingPartitionsBehavior.valueOf((String) value, hiveClientConfig.isImmutablePartitions()),
                         InsertExistingPartitionsBehavior::toString),
@@ -233,6 +255,11 @@ public final class HiveSessionProperties
                         "Experimental: ORC: Max dictionary memory",
                         orcFileWriterConfig.getDictionaryMaxMemory(),
                         false),
+                dataSizeSessionProperty(
+                        PAGEFILE_WRITER_MAX_STRIPE_SIZE,
+                        "PAGEFILE: Max stripe size",
+                        hiveClientConfig.getPageFileStripeMaxSize(),
+                        false),
                 stringProperty(
                         HIVE_STORAGE_FORMAT,
                         "Default storage format for new tables or partitions",
@@ -244,6 +271,15 @@ public final class HiveSessionProperties
                         VARCHAR,
                         HiveCompressionCodec.class,
                         hiveClientConfig.getCompressionCodec(),
+                        false,
+                        value -> HiveCompressionCodec.valueOf(((String) value).toUpperCase()),
+                        HiveCompressionCodec::name),
+                new PropertyMetadata<>(
+                        ORC_COMPRESSION_CODEC,
+                        "The preferred compression codec to use when writing ORC and DWRF files",
+                        VARCHAR,
+                        HiveCompressionCodec.class,
+                        hiveClientConfig.getOrcCompressionCodec(),
                         false,
                         value -> HiveCompressionCodec.valueOf(((String) value).toUpperCase()),
                         HiveCompressionCodec::name),
@@ -385,6 +421,11 @@ public final class HiveSessionProperties
                         "Experimental: enable pushdown of range filters on subscripts (a[2] = 5) into ORC column readers",
                         hiveClientConfig.isRangeFiltersOnSubscriptsEnabled(),
                         false),
+                booleanProperty(
+                        ADAPTIVE_FILTER_REORDERING_ENABLED,
+                        "Experimental: enable adaptive filter reordering",
+                        hiveClientConfig.isAdaptiveFilterReorderingEnabled(),
+                        false),
                 integerProperty(
                         VIRTUAL_BUCKET_COUNT,
                         "Number of virtual bucket assigned for unbucketed tables",
@@ -404,7 +445,46 @@ public final class HiveSessionProperties
                         ORC_ZSTD_JNI_DECOMPRESSION_ENABLED,
                         "use JNI based zstd decompression for reading ORC files",
                         hiveClientConfig.isZstdJniDecompressionEnabled(),
-                        true));
+                        true),
+                booleanProperty(
+                        SHUFFLE_PARTITIONED_COLUMNS_FOR_TABLE_WRITE,
+                        "Shuffle the data on partitioned columns",
+                        false,
+                        false),
+                booleanProperty(
+                        FAIL_FAST_ON_INSERT_INTO_IMMUTABLE_PARTITIONS_ENABLED,
+                        "Fail fast when trying to insert into an immutable partition. Increases load on the metastore",
+                        hiveClientConfig.isFailFastOnInsertIntoImmutablePartitionsEnabled(),
+                        false),
+                booleanProperty(
+                        USE_LIST_DIRECTORY_CACHE,
+                        "Use list directory cache if available when set to true",
+                        !hiveClientConfig.getFileStatusCacheTables().isEmpty(),
+                        false),
+                booleanProperty(
+                        PARQUET_OPTIMIZED_WRITER_ENABLED,
+                        "Experimental: Enable optimized writer",
+                        parquetFileWriterConfig.isParquetOptimizedWriterEnabled(),
+                        false),
+                booleanProperty(
+                        PARQUET_BATCH_READ_OPTIMIZATION_ENABLED,
+                        "Is Parquet batch read optimization enabled",
+                        hiveClientConfig.isParquetBatchReadOptimizationEnabled(),
+                        false),
+                booleanProperty(
+                        PARQUET_BATCH_READER_VERIFICATION_ENABLED,
+                        "Is Parquet batch reader verification enabled? This is for testing purposes only, not to be used in production",
+                        hiveClientConfig.isParquetBatchReaderVerificationEnabled(),
+                        false),
+                new PropertyMetadata<>(
+                        BUCKET_FUNCTION_TYPE_FOR_EXCHANGE,
+                        "hash function type for bucketed table exchange",
+                        VARCHAR,
+                        BucketFunctionType.class,
+                        hiveClientConfig.getBucketFunctionTypeForExchange(),
+                        false,
+                        value -> BucketFunctionType.valueOf((String) value),
+                        BucketFunctionType::toString));
     }
 
     public List<PropertyMetadata<?>> getSessionProperties()
@@ -422,14 +502,19 @@ public final class HiveSessionProperties
         return session.getProperty(IGNORE_TABLE_BUCKETING, Boolean.class);
     }
 
+    public static Integer getMinBucketCountToNotIgnoreTableBucketing(ConnectorSession session)
+    {
+        return session.getProperty(MIN_BUCKET_COUNT_TO_NOT_IGNORE_TABLE_BUCKETING, Integer.class);
+    }
+
     public static int getMaxBucketsForGroupedExecution(ConnectorSession session)
     {
         return session.getProperty(MAX_BUCKETS_FOR_GROUPED_EXECUTION, Integer.class);
     }
 
-    public static boolean isForceLocalScheduling(ConnectorSession session)
+    public static NodeSelectionStrategy getNodeSelectionStrategy(ConnectorSession session)
     {
-        return session.getProperty(FORCE_LOCAL_SCHEDULING, Boolean.class);
+        return session.getProperty(NODE_SELECTION_STRATEGY, NodeSelectionStrategy.class);
     }
 
     public static InsertExistingPartitionsBehavior getInsertExistingPartitionsBehavior(ConnectorSession session)
@@ -529,6 +614,11 @@ public final class HiveSessionProperties
         return session.getProperty(ORC_OPTIMIZED_WRITER_MAX_DICTIONARY_MEMORY, DataSize.class);
     }
 
+    public static DataSize getPageFileStripeMaxSize(ConnectorSession session)
+    {
+        return session.getProperty(PAGEFILE_WRITER_MAX_STRIPE_SIZE, DataSize.class);
+    }
+
     public static HiveStorageFormat getHiveStorageFormat(ConnectorSession session)
     {
         return HiveStorageFormat.valueOf(session.getProperty(HIVE_STORAGE_FORMAT, String.class).toUpperCase(ENGLISH));
@@ -537,6 +627,11 @@ public final class HiveSessionProperties
     public static HiveCompressionCodec getCompressionCodec(ConnectorSession session)
     {
         return session.getProperty(COMPRESSION_CODEC, HiveCompressionCodec.class);
+    }
+
+    public static HiveCompressionCodec getOrcCompressionCodec(ConnectorSession session)
+    {
+        return session.getProperty(ORC_COMPRESSION_CODEC, HiveCompressionCodec.class);
     }
 
     public static boolean isRespectTableFormat(ConnectorSession session)
@@ -674,6 +769,11 @@ public final class HiveSessionProperties
         return session.getProperty(RANGE_FILTERS_ON_SUBSCRIPTS_ENABLED, Boolean.class);
     }
 
+    public static boolean isAdaptiveFilterReorderingEnabled(ConnectorSession session)
+    {
+        return session.getProperty(ADAPTIVE_FILTER_REORDERING_ENABLED, Boolean.class);
+    }
+
     public static int getVirtualBucketCount(ConnectorSession session)
     {
         int virtualBucketCount = session.getProperty(VIRTUAL_BUCKET_COUNT, Integer.class);
@@ -688,6 +788,21 @@ public final class HiveSessionProperties
         return session.getProperty(OFFLINE_DATA_DEBUG_MODE_ENABLED, Boolean.class);
     }
 
+    public static boolean isShufflePartitionedColumnsForTableWriteEnabled(ConnectorSession session)
+    {
+        return session.getProperty(SHUFFLE_PARTITIONED_COLUMNS_FOR_TABLE_WRITE, Boolean.class);
+    }
+
+    public static boolean isParquetBatchReadsEnabled(ConnectorSession session)
+    {
+        return session.getProperty(PARQUET_BATCH_READ_OPTIMIZATION_ENABLED, Boolean.class);
+    }
+
+    public static boolean isParquetBatchReaderVerificationEnabled(ConnectorSession session)
+    {
+        return session.getProperty(PARQUET_BATCH_READER_VERIFICATION_ENABLED, Boolean.class);
+    }
+
     public static PropertyMetadata<DataSize> dataSizeSessionProperty(String name, String description, DataSize defaultValue, boolean hidden)
     {
         return new PropertyMetadata<>(
@@ -699,5 +814,34 @@ public final class HiveSessionProperties
                 hidden,
                 value -> DataSize.valueOf((String) value),
                 DataSize::toString);
+    }
+
+    private static InsertExistingPartitionsBehavior getDefaultInsertExistingPartitionsBehavior(HiveClientConfig hiveClientConfig)
+    {
+        if (!hiveClientConfig.isImmutablePartitions()) {
+            return APPEND;
+        }
+
+        return hiveClientConfig.isInsertOverwriteImmutablePartitionEnabled() ? OVERWRITE : ERROR;
+    }
+
+    public static boolean isFailFastOnInsertIntoImmutablePartitionsEnabled(ConnectorSession session)
+    {
+        return session.getProperty(FAIL_FAST_ON_INSERT_INTO_IMMUTABLE_PARTITIONS_ENABLED, Boolean.class);
+    }
+
+    public static boolean isUseListDirectoryCache(ConnectorSession session)
+    {
+        return session.getProperty(USE_LIST_DIRECTORY_CACHE, Boolean.class);
+    }
+
+    public static boolean isParquetOptimizedWriterEnabled(ConnectorSession session)
+    {
+        return session.getProperty(PARQUET_OPTIMIZED_WRITER_ENABLED, Boolean.class);
+    }
+
+    public static BucketFunctionType getBucketFunctionTypeForExchange(ConnectorSession session)
+    {
+        return session.getProperty(BUCKET_FUNCTION_TYPE_FOR_EXCHANGE, BucketFunctionType.class);
     }
 }

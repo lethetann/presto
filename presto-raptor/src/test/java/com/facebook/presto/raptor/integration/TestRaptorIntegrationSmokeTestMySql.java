@@ -32,7 +32,7 @@ import static com.facebook.presto.raptor.RaptorQueryRunner.copyTables;
 import static com.facebook.presto.raptor.RaptorQueryRunner.createSession;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
-@Test
+@Test(singleThreaded = true)
 public class TestRaptorIntegrationSmokeTestMySql
         extends TestRaptorIntegrationSmokeTest
 {
@@ -77,6 +77,7 @@ public class TestRaptorIntegrationSmokeTestMySql
                 .put("storage.data-directory", new File(baseDir, "data").toURI().toString())
                 .put("storage.max-shard-rows", "2000")
                 .put("backup.provider", "file")
+                .put("raptor.startup-grace-period", "10s")
                 .put("backup.directory", new File(baseDir, "backup").getAbsolutePath())
                 .build();
 

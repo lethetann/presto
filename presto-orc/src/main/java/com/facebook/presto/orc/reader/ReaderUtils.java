@@ -13,9 +13,9 @@
  */
 package com.facebook.presto.orc.reader;
 
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.orc.OrcCorruptionException;
 import com.facebook.presto.orc.StreamDescriptor;
-import com.facebook.presto.spi.type.Type;
 
 import java.util.function.Predicate;
 
@@ -57,6 +57,19 @@ final class ReaderUtils
             }
         }
         return result;
+    }
+
+    public static void unpackByteNulls(byte[] values, boolean[] isNull, int positionCount, int nonNullCount)
+    {
+        int position = nonNullCount - 1;
+        for (int i = positionCount - 1; i >= 0; i--) {
+            if (!isNull[i]) {
+                values[i] = values[position--];
+            }
+            else {
+                values[i] = 0;
+            }
+        }
     }
 
     public static short[] unpackShortNulls(short[] values, boolean[] isNull)

@@ -13,19 +13,17 @@
  */
 package com.facebook.presto.operator;
 
-import com.esri.core.geometry.Geometry;
-import com.esri.core.geometry.GeometryCursor;
 import com.esri.core.geometry.Operator;
 import com.esri.core.geometry.OperatorFactoryLocal;
 import com.esri.core.geometry.ogc.OGCGeometry;
 import com.facebook.presto.Session;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.geospatial.Rectangle;
 import com.facebook.presto.geospatial.rtree.Flatbush;
 import com.facebook.presto.memory.context.LocalMemoryContext;
 import com.facebook.presto.operator.PagesRTreeIndex.GeometryWithPosition;
 import com.facebook.presto.operator.SpatialIndexBuilderOperator.SpatialPredicate;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.sql.gen.JoinFilterFunctionCompiler;
 import io.airlift.slice.Slice;
 import io.airlift.units.DataSize;
@@ -38,12 +36,13 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.function.Supplier;
 
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.geospatial.GeometryUtils.accelerateGeometry;
 import static com.facebook.presto.geospatial.serde.EsriGeometrySerde.deserialize;
 import static com.facebook.presto.operator.PagesSpatialIndex.EMPTY_INDEX;
 import static com.facebook.presto.operator.SyntheticAddress.decodePosition;
 import static com.facebook.presto.operator.SyntheticAddress.decodeSliceIndex;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
 import static com.google.common.base.Verify.verify;
 import static io.airlift.units.DataSize.Unit.BYTE;
 import static java.lang.Math.toIntExact;
@@ -152,19 +151,6 @@ public class PagesSpatialIndexSupplier
         }
 
         return new Flatbush<>(geometries.toArray(new GeometryWithPosition[] {}));
-    }
-
-    private static void accelerateGeometry(OGCGeometry ogcGeometry, Operator relateOperator)
-    {
-        // Recurse into GeometryCollections
-        GeometryCursor cursor = ogcGeometry.getEsriGeometryCursor();
-        while (true) {
-            com.esri.core.geometry.Geometry esriGeometry = cursor.next();
-            if (esriGeometry == null) {
-                break;
-            }
-            relateOperator.accelerateGeometry(esriGeometry, null, Geometry.GeometryAccelerationDegree.enumMild);
-        }
     }
 
     // doesn't include memory used by channels and addresses which are shared with PagesIndex

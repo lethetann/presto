@@ -5,7 +5,7 @@
     <parent>
         <groupId>com.facebook.presto</groupId>
         <artifactId>presto-root</artifactId>
-        <version>0.231-SNAPSHOT</version>
+        <version>0.240-SNAPSHOT</version>
     </parent>
 
     <artifactId>presto-orc</artifactId>
@@ -16,16 +16,6 @@
     </properties>
 
     <dependencies>
-        <dependency>
-            <groupId>com.facebook.presto</groupId>
-            <artifactId>presto-array</artifactId>
-        </dependency>
-
-        <dependency>
-            <groupId>com.facebook.presto</groupId>
-            <artifactId>presto-memory-context</artifactId>
-        </dependency>
-
         <dependency>
             <groupId>it.unimi.dsi</groupId>
             <artifactId>fastutil</artifactId>
@@ -77,19 +67,13 @@
         </dependency>
 
         <dependency>
-            <groupId>io.airlift</groupId>
-            <artifactId>joda-to-java-time-bridge</artifactId>
-            <scope>runtime</scope>
-        </dependency>
-
-        <dependency>
             <groupId>com.google.guava</groupId>
             <artifactId>guava</artifactId>
         </dependency>
 
         <dependency>
             <groupId>com.facebook.presto</groupId>
-            <artifactId>presto-spi</artifactId>
+            <artifactId>presto-common</artifactId>
         </dependency>
 
         <dependency>
@@ -121,6 +105,18 @@
         </dependency>
 
         <!-- for testing -->
+        <dependency>
+            <groupId>com.facebook.presto</groupId>
+            <artifactId>presto-spi</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>com.facebook.presto</groupId>
+            <artifactId>presto-memory-context</artifactId>
+            <scope>test</scope>
+        </dependency>
+
         <dependency>
             <groupId>org.openjdk.jmh</groupId>
             <artifactId>jmh-core</artifactId>

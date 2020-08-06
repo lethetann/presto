@@ -17,17 +17,19 @@ import com.facebook.presto.jdbc.PrestoConnection;
 import com.facebook.presto.jdbc.PrestoStatement;
 import com.facebook.presto.jdbc.QueryStats;
 import com.facebook.presto.sql.tree.Statement;
+import com.facebook.presto.verifier.framework.ClusterConnectionException;
+import com.facebook.presto.verifier.framework.PrestoQueryException;
 import com.facebook.presto.verifier.framework.QueryConfiguration;
 import com.facebook.presto.verifier.framework.QueryException;
 import com.facebook.presto.verifier.framework.QueryResult;
 import com.facebook.presto.verifier.framework.QueryStage;
 import com.facebook.presto.verifier.framework.VerificationContext;
+import com.facebook.presto.verifier.framework.VerifierConfig;
 import com.facebook.presto.verifier.retry.ForClusterConnection;
 import com.facebook.presto.verifier.retry.ForPresto;
 import com.facebook.presto.verifier.retry.RetryConfig;
 import com.facebook.presto.verifier.retry.RetryDriver;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import io.airlift.units.Duration;
 
 import java.sql.DriverManager;
@@ -40,23 +42,24 @@ import java.util.Optional;
 import java.util.function.Consumer;
 
 import static com.facebook.presto.sql.SqlFormatter.formatSql;
-import static com.facebook.presto.verifier.framework.QueryException.Type.CLUSTER_CONNECTION;
-import static com.facebook.presto.verifier.framework.QueryException.Type.PRESTO;
-import static com.google.common.base.Preconditions.checkState;
+import static com.facebook.presto.verifier.prestoaction.QueryActionUtil.mangleSessionProperties;
 import static java.util.Objects.requireNonNull;
 
 public class JdbcPrestoAction
         implements PrestoAction
 {
-    private static final String QUERY_MAX_EXECUTION_TIME = "query_max_execution_time";
+    public static final String QUERY_ACTION_TYPE = "presto-jdbc";
 
     private final SqlExceptionClassifier exceptionClassifier;
     private final QueryConfiguration queryConfiguration;
+    private final VerificationContext verificationContext;
 
     private final String jdbcUrl;
     private final Duration queryTimeout;
     private final Duration metadataTimeout;
     private final Duration checksumTimeout;
+    private final String testId;
+    private final Optional<String> testName;
 
     private final RetryDriver<QueryException> networkRetry;
     private final RetryDriver<QueryException> prestoRetry;
@@ -65,105 +68,79 @@ public class JdbcPrestoAction
             SqlExceptionClassifier exceptionClassifier,
             QueryConfiguration queryConfiguration,
             VerificationContext verificationContext,
-            PrestoClusterConfig prestoClusterConfig,
+            PrestoActionConfig prestoActionConfig,
+            Duration metadataTimeout,
+            Duration checksumTimeout,
             @ForClusterConnection RetryConfig networkRetryConfig,
-            @ForPresto RetryConfig prestoRetryConfig)
+            @ForPresto RetryConfig prestoRetryConfig,
+            VerifierConfig verifierConfig)
     {
         this.exceptionClassifier = requireNonNull(exceptionClassifier, "exceptionClassifier is null");
         this.queryConfiguration = requireNonNull(queryConfiguration, "queryConfiguration is null");
+        this.verificationContext = requireNonNull(verificationContext, "verificationContext is null");
 
-        this.jdbcUrl = requireNonNull(prestoClusterConfig.getJdbcUrl(), "jdbcUrl is null");
-        this.queryTimeout = requireNonNull(prestoClusterConfig.getQueryTimeout(), "queryTimeout is null");
-        this.metadataTimeout = requireNonNull(prestoClusterConfig.getMetadataTimeout(), "metadataTimeout is null");
-        this.checksumTimeout = requireNonNull(prestoClusterConfig.getChecksumTimeout(), "checksumTimeout is null");
+        this.jdbcUrl = requireNonNull(prestoActionConfig.getJdbcUrl(), "jdbcUrl is null");
+        this.queryTimeout = requireNonNull(prestoActionConfig.getQueryTimeout(), "queryTimeout is null");
+        this.metadataTimeout = requireNonNull(metadataTimeout, "metadataTimeout is null");
+        this.checksumTimeout = requireNonNull(checksumTimeout, "checksumTimeout is null");
+        this.testId = requireNonNull(verifierConfig.getTestId(), "testId is null");
+        this.testName = requireNonNull(verifierConfig.getTestName(), "testName is null");
 
         this.networkRetry = new RetryDriver<>(
                 networkRetryConfig,
-                queryException -> queryException.getType() == CLUSTER_CONNECTION,
+                queryException -> queryException instanceof ClusterConnectionException && queryException.isRetryable(),
                 QueryException.class,
                 verificationContext::addException);
         this.prestoRetry = new RetryDriver<>(
                 prestoRetryConfig,
-                queryException -> queryException.getType() == PRESTO && queryException.isRetryable(),
+                queryException -> queryException instanceof PrestoQueryException && queryException.isRetryable(),
                 QueryException.class,
                 verificationContext::addException);
     }
 
     @Override
-    public QueryStats execute(Statement statement, QueryStage queryStage)
+    public QueryActionStats execute(Statement statement, QueryStage queryStage)
     {
-        return execute(statement, queryStage, Optional.empty()).getQueryStats();
+        return execute(statement, queryStage, new NoResultStatementExecutor<>());
     }
 
     @Override
     public <R> QueryResult<R> execute(Statement statement, QueryStage queryStage, ResultSetConverter<R> converter)
     {
-        return execute(statement, queryStage, Optional.of(converter));
+        return execute(statement, queryStage, new ResultConvertingStatementExecutor<>(converter));
     }
 
-    private <R> QueryResult<R> execute(Statement statement, QueryStage queryStage, Optional<ResultSetConverter<R>> converter)
+    private <T> T execute(Statement statement, QueryStage queryStage, StatementExecutor<T> statementExecutor)
     {
         return prestoRetry.run(
                 "presto",
                 () -> networkRetry.run(
                         "presto-cluster-connection",
-                        () -> executeOnce(statement, queryStage, converter)));
+                        () -> executeOnce(statement, queryStage, statementExecutor)));
     }
 
-    private <R> QueryResult<R> executeOnce(Statement statement, QueryStage queryStage, Optional<ResultSetConverter<R>> converter)
+    private <T> T executeOnce(Statement statement, QueryStage queryStage, StatementExecutor<T> statementExecutor)
     {
         String query = formatSql(statement, Optional.empty());
-        ProgressMonitor progressMonitor = new ProgressMonitor();
+        String clientInfo = new ClientInfo(
+                testId,
+                testName,
+                verificationContext.getSourceQueryName(),
+                verificationContext.getSuite()).serialize();
 
-        try (PrestoConnection connection = getConnection(queryStage)) {
+        try (PrestoConnection connection = getConnection(queryStage, clientInfo)) {
             try (java.sql.Statement jdbcStatement = connection.createStatement()) {
                 PrestoStatement prestoStatement = jdbcStatement.unwrap(PrestoStatement.class);
-                prestoStatement.setProgressMonitor(progressMonitor);
-
-                ImmutableList.Builder<R> rows = ImmutableList.builder();
-                ImmutableList.Builder<String> columnNames = ImmutableList.builder();
-                if (converter.isPresent()) {
-                    try (ResultSet resultSet = jdbcStatement.executeQuery(query)) {
-                        for (int i = 1; i <= resultSet.getMetaData().getColumnCount(); i++) {
-                            columnNames.add(resultSet.getMetaData().getColumnName(i));
-                        }
-                        while (resultSet.next()) {
-                            rows.add(converter.get().apply(resultSet));
-                        }
-                    }
-                }
-                else {
-                    boolean moreResults = jdbcStatement.execute(query);
-                    if (moreResults) {
-                        consumeResultSet(jdbcStatement.getResultSet());
-                    }
-                    do {
-                        moreResults = jdbcStatement.getMoreResults();
-                        if (moreResults) {
-                            consumeResultSet(jdbcStatement.getResultSet());
-                        }
-                    }
-                    while (moreResults || jdbcStatement.getUpdateCount() != -1);
-                }
-
-                checkState(progressMonitor.getLastQueryStats().isPresent(), "lastQueryStats is missing");
-                return new QueryResult<>(rows.build(), columnNames.build(), progressMonitor.getLastQueryStats().get());
+                prestoStatement.setProgressMonitor(statementExecutor.getProgressMonitor());
+                return statementExecutor.execute(prestoStatement, query);
             }
         }
         catch (SQLException e) {
-            throw exceptionClassifier.createException(queryStage, progressMonitor.getLastQueryStats(), e);
+            throw exceptionClassifier.createException(queryStage, statementExecutor.getProgressMonitor().getLastQueryStats(), e);
         }
     }
 
-    private void consumeResultSet(ResultSet resultSet)
-            throws SQLException
-    {
-        while (resultSet.next()) {
-            // Do nothing
-        }
-    }
-
-    private PrestoConnection getConnection(QueryStage queryStage)
+    private PrestoConnection getConnection(QueryStage queryStage, String clientInfo)
             throws SQLException
     {
         PrestoConnection connection = DriverManager.getConnection(
@@ -174,6 +151,7 @@ public class JdbcPrestoAction
 
         try {
             connection.setClientInfo("ApplicationName", "verifier-test");
+            connection.setClientInfo("ClientInfo", clientInfo);
             connection.setCatalog(queryConfiguration.getCatalog());
             connection.setSchema(queryConfiguration.getSchema());
         }
@@ -181,10 +159,7 @@ public class JdbcPrestoAction
             // Do nothing
         }
 
-        Map<String, String> sessionProperties = ImmutableMap.<String, String>builder()
-                .putAll(queryConfiguration.getSessionProperties())
-                .put(QUERY_MAX_EXECUTION_TIME, getTimeout(queryStage).toString())
-                .build();
+        Map<String, String> sessionProperties = mangleSessionProperties(queryConfiguration.getSessionProperties(), queryStage, getTimeout(queryStage));
         for (Entry<String, String> entry : sessionProperties.entrySet()) {
             connection.setSessionProperty(entry.getKey(), entry.getValue());
         }
@@ -196,15 +171,22 @@ public class JdbcPrestoAction
         switch (queryStage) {
             case REWRITE:
             case DESCRIBE:
+            case CONTROL_SETUP:
+            case CONTROL_TEARDOWN:
+            case TEST_SETUP:
+            case TEST_TEARDOWN:
+            case DETERMINISM_ANALYSIS_SETUP:
                 return metadataTimeout;
-            case CHECKSUM:
+            case CONTROL_CHECKSUM:
+            case TEST_CHECKSUM:
+            case DETERMINISM_ANALYSIS_CHECKSUM:
                 return checksumTimeout;
             default:
                 return queryTimeout;
         }
     }
 
-    static class ProgressMonitor
+    private static class ProgressMonitor
             implements Consumer<QueryStats>
     {
         private Optional<QueryStats> queryStats = Optional.empty();
@@ -215,9 +197,86 @@ public class JdbcPrestoAction
             this.queryStats = Optional.of(requireNonNull(queryStats, "queryStats is null"));
         }
 
-        public synchronized Optional<QueryStats> getLastQueryStats()
+        public synchronized QueryActionStats getLastQueryStats()
         {
-            return queryStats;
+            return new QueryActionStats(queryStats, Optional.empty());
+        }
+    }
+
+    private interface StatementExecutor<T>
+    {
+        T execute(PrestoStatement statement, String query)
+                throws SQLException;
+
+        ProgressMonitor getProgressMonitor();
+    }
+
+    private static class ResultConvertingStatementExecutor<R>
+            implements StatementExecutor<QueryResult<R>>
+    {
+        private final ResultSetConverter<R> converter;
+        private final ProgressMonitor progressMonitor = new ProgressMonitor();
+
+        public ResultConvertingStatementExecutor(ResultSetConverter<R> converter)
+        {
+            this.converter = requireNonNull(converter, "converter is null");
+        }
+
+        @Override
+        public QueryResult<R> execute(PrestoStatement statement, String query)
+                throws SQLException
+        {
+            ImmutableList.Builder<R> rows = ImmutableList.builder();
+            try (ResultSet resultSet = statement.executeQuery(query)) {
+                while (resultSet.next()) {
+                    converter.apply(resultSet).ifPresent(rows::add);
+                }
+                return new QueryResult<>(rows.build(), resultSet.getMetaData(), progressMonitor.getLastQueryStats());
+            }
+        }
+
+        @Override
+        public ProgressMonitor getProgressMonitor()
+        {
+            return progressMonitor;
+        }
+    }
+
+    private static class NoResultStatementExecutor<R>
+            implements StatementExecutor<QueryActionStats>
+    {
+        private final ProgressMonitor progressMonitor = new ProgressMonitor();
+
+        @Override
+        public QueryActionStats execute(PrestoStatement statement, String query)
+                throws SQLException
+        {
+            boolean moreResults = statement.execute(query);
+            if (moreResults) {
+                consumeResultSet(statement.getResultSet());
+            }
+            do {
+                moreResults = statement.getMoreResults();
+                if (moreResults) {
+                    consumeResultSet(statement.getResultSet());
+                }
+            }
+            while (moreResults || statement.getUpdateCount() != -1);
+            return progressMonitor.getLastQueryStats();
+        }
+
+        @Override
+        public ProgressMonitor getProgressMonitor()
+        {
+            return progressMonitor;
+        }
+
+        private static void consumeResultSet(ResultSet resultSet)
+                throws SQLException
+        {
+            while (resultSet.next()) {
+                // Do nothing
+            }
         }
     }
 }

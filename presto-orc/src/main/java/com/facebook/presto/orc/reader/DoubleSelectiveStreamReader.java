@@ -13,7 +13,12 @@
  */
 package com.facebook.presto.orc.reader;
 
-import com.facebook.presto.memory.context.LocalMemoryContext;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockLease;
+import com.facebook.presto.common.block.ClosingBlockLease;
+import com.facebook.presto.common.block.LongArrayBlock;
+import com.facebook.presto.common.block.RunLengthEncodedBlock;
+import com.facebook.presto.orc.OrcLocalMemoryContext;
 import com.facebook.presto.orc.StreamDescriptor;
 import com.facebook.presto.orc.TupleDomainFilter;
 import com.facebook.presto.orc.metadata.ColumnEncoding;
@@ -21,25 +26,20 @@ import com.facebook.presto.orc.stream.BooleanInputStream;
 import com.facebook.presto.orc.stream.DoubleInputStream;
 import com.facebook.presto.orc.stream.InputStreamSource;
 import com.facebook.presto.orc.stream.InputStreamSources;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockLease;
-import com.facebook.presto.spi.block.ClosingBlockLease;
-import com.facebook.presto.spi.block.LongArrayBlock;
-import com.facebook.presto.spi.block.RunLengthEncodedBlock;
 import org.openjdk.jol.info.ClassLayout;
 
 import javax.annotation.Nullable;
 
 import java.io.IOException;
-import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
-import static com.facebook.presto.array.Arrays.ensureCapacity;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.orc.array.Arrays.ensureCapacity;
 import static com.facebook.presto.orc.metadata.Stream.StreamKind.DATA;
 import static com.facebook.presto.orc.metadata.Stream.StreamKind.PRESENT;
 import static com.facebook.presto.orc.reader.SelectiveStreamReaders.initializeOutputPositions;
 import static com.facebook.presto.orc.stream.MissingInputStreamSource.missingStreamSource;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
@@ -60,7 +60,7 @@ public class DoubleSelectiveStreamReader
     private final boolean nonDeterministicFilter;
     private final boolean nullsAllowed;
     private final boolean outputRequired;
-    private final LocalMemoryContext systemMemoryContext;
+    private final OrcLocalMemoryContext systemMemoryContext;
 
     private InputStreamSource<BooleanInputStream> presentStreamSource = missingStreamSource(BooleanInputStream.class);
     @Nullable
@@ -86,7 +86,7 @@ public class DoubleSelectiveStreamReader
             StreamDescriptor streamDescriptor,
             Optional<TupleDomainFilter> filter,
             boolean outputRequired,
-            LocalMemoryContext systemMemoryContext)
+            OrcLocalMemoryContext systemMemoryContext)
     {
         requireNonNull(filter, "filter is null");
         checkArgument(filter.isPresent() || outputRequired, "filter must be present if outputRequired is false");
@@ -100,7 +100,7 @@ public class DoubleSelectiveStreamReader
     }
 
     @Override
-    public void startStripe(InputStreamSources dictionaryStreamSources, List<ColumnEncoding> encoding)
+    public void startStripe(InputStreamSources dictionaryStreamSources, Map<Integer, ColumnEncoding> encoding)
     {
         presentStreamSource = missingStreamSource(BooleanInputStream.class);
         dataStreamSource = missingStreamSource(DoubleInputStream.class);
@@ -388,7 +388,7 @@ public class DoubleSelectiveStreamReader
         checkState(!valuesInUse, "BlockLease hasn't been closed yet");
 
         if (allNulls) {
-            return newLease(new RunLengthEncodedBlock(NULL_BLOCK, outputPositionCount));
+            return newLease(new RunLengthEncodedBlock(NULL_BLOCK, positionCount));
         }
 
         boolean includeNulls = nullsAllowed && presentStream != null;
@@ -440,6 +440,15 @@ public class DoubleSelectiveStreamReader
     @Override
     public void close()
     {
+        values = null;
+        outputPositions = null;
+        nulls = null;
+
+        presentStream = null;
+        presentStreamSource = null;
+        dataStream = null;
+        dataStreamSource = null;
+
         systemMemoryContext.close();
     }
 }

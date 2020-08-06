@@ -13,12 +13,13 @@
  */
 package com.facebook.presto.spi.connector.classloader;
 
+import com.facebook.presto.common.predicate.TupleDomain;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ColumnMetadata;
 import com.facebook.presto.spi.ConnectorInsertTableHandle;
 import com.facebook.presto.spi.ConnectorNewTableLayout;
 import com.facebook.presto.spi.ConnectorOutputTableHandle;
-import com.facebook.presto.spi.ConnectorPushdownFilterResult;
 import com.facebook.presto.spi.ConnectorResolvedIndex;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.ConnectorTableHandle;
@@ -31,13 +32,12 @@ import com.facebook.presto.spi.Constraint;
 import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.SchemaTablePrefix;
 import com.facebook.presto.spi.SystemTable;
+import com.facebook.presto.spi.TableLayoutFilterCoverage;
 import com.facebook.presto.spi.classloader.ThreadContextClassLoader;
 import com.facebook.presto.spi.connector.ConnectorMetadata;
 import com.facebook.presto.spi.connector.ConnectorOutputMetadata;
 import com.facebook.presto.spi.connector.ConnectorPartitioningHandle;
 import com.facebook.presto.spi.connector.ConnectorPartitioningMetadata;
-import com.facebook.presto.spi.predicate.TupleDomain;
-import com.facebook.presto.spi.relation.RowExpression;
 import com.facebook.presto.spi.security.GrantInfo;
 import com.facebook.presto.spi.security.PrestoPrincipal;
 import com.facebook.presto.spi.security.Privilege;
@@ -45,7 +45,6 @@ import com.facebook.presto.spi.security.RoleGrant;
 import com.facebook.presto.spi.statistics.ComputedStatistics;
 import com.facebook.presto.spi.statistics.TableStatistics;
 import com.facebook.presto.spi.statistics.TableStatisticsMetadata;
-import com.facebook.presto.spi.type.Type;
 import io.airlift.slice.Slice;
 
 import java.util.Collection;
@@ -91,18 +90,10 @@ public class ClassLoaderSafeConnectorMetadata
     }
 
     @Override
-    public boolean isPushdownFilterSupported(ConnectorSession session, ConnectorTableHandle tableHandle)
+    public boolean isLegacyGetLayoutSupported(ConnectorSession session, ConnectorTableHandle tableHandle)
     {
         try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
-            return delegate.isPushdownFilterSupported(session, tableHandle);
-        }
-    }
-
-    @Override
-    public ConnectorPushdownFilterResult pushdownFilter(ConnectorSession session, ConnectorTableHandle tableHandle, RowExpression filter, Optional<ConnectorTableLayoutHandle> currentLayoutHandle)
-    {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
-            return delegate.pushdownFilter(session, tableHandle, filter, currentLayoutHandle);
+            return delegate.isLegacyGetLayoutSupported(session, tableHandle);
         }
     }
 
@@ -147,10 +138,26 @@ public class ClassLoaderSafeConnectorMetadata
     }
 
     @Override
+    public Optional<ConnectorNewTableLayout> getPreferredShuffleLayoutForNewTable(ConnectorSession session, ConnectorTableMetadata tableMetadata)
+    {
+        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+            return delegate.getPreferredShuffleLayoutForNewTable(session, tableMetadata);
+        }
+    }
+
+    @Override
     public Optional<ConnectorNewTableLayout> getInsertLayout(ConnectorSession session, ConnectorTableHandle tableHandle)
     {
         try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
             return delegate.getInsertLayout(session, tableHandle);
+        }
+    }
+
+    @Override
+    public Optional<ConnectorNewTableLayout> getPreferredShuffleLayoutForInsert(ConnectorSession session, ConnectorTableHandle tableHandle)
+    {
+        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+            return delegate.getPreferredShuffleLayoutForInsert(session, tableHandle);
         }
     }
 
@@ -271,6 +278,14 @@ public class ClassLoaderSafeConnectorMetadata
     {
         try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
             return delegate.getColumnMetadata(session, tableHandle, columnHandle);
+        }
+    }
+
+    @Override
+    public TupleDomain<ColumnHandle> toExplainIOConstraints(ConnectorSession session, ConnectorTableHandle tableHandle, TupleDomain<ColumnHandle> constraints)
+    {
+        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+            return delegate.toExplainIOConstraints(session, tableHandle, constraints);
         }
     }
 
@@ -419,10 +434,10 @@ public class ClassLoaderSafeConnectorMetadata
     }
 
     @Override
-    public void createView(ConnectorSession session, SchemaTableName viewName, String viewData, boolean replace)
+    public void createView(ConnectorSession session, ConnectorTableMetadata viewMetadata, String viewData, boolean replace)
     {
         try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
-            delegate.createView(session, viewName, viewData, replace);
+            delegate.createView(session, viewMetadata, viewData, replace);
         }
     }
 
@@ -595,18 +610,26 @@ public class ClassLoaderSafeConnectorMetadata
     }
 
     @Override
-    public CompletableFuture<Void> commitPartitionAsync(ConnectorSession session, ConnectorOutputTableHandle tableHandle, Collection<Slice> fragments)
+    public CompletableFuture<Void> commitPageSinkAsync(ConnectorSession session, ConnectorOutputTableHandle tableHandle, Collection<Slice> fragments)
     {
         try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
-            return delegate.commitPartitionAsync(session, tableHandle, fragments);
+            return delegate.commitPageSinkAsync(session, tableHandle, fragments);
         }
     }
 
     @Override
-    public CompletableFuture<Void> commitPartitionAsync(ConnectorSession session, ConnectorInsertTableHandle tableHandle, Collection<Slice> fragments)
+    public CompletableFuture<Void> commitPageSinkAsync(ConnectorSession session, ConnectorInsertTableHandle tableHandle, Collection<Slice> fragments)
     {
         try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
-            return delegate.commitPartitionAsync(session, tableHandle, fragments);
+            return delegate.commitPageSinkAsync(session, tableHandle, fragments);
+        }
+    }
+
+    @Override
+    public TableLayoutFilterCoverage getTableLayoutFilterCoverage(ConnectorTableLayoutHandle tableHandle, Set<String> relevantPartitionColumns)
+    {
+        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+            return delegate.getTableLayoutFilterCoverage(tableHandle, relevantPartitionColumns);
         }
     }
 }

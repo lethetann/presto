@@ -16,9 +16,12 @@ package com.facebook.presto.hive.util;
 import com.facebook.airlift.stats.TimeStat;
 import com.facebook.presto.hive.HiveFileInfo;
 import com.facebook.presto.hive.NamenodeStats;
+import com.facebook.presto.hive.NestedDirectoryPolicy;
 import com.facebook.presto.spi.PrestoException;
 import com.google.common.collect.AbstractIterator;
+import com.google.common.collect.Iterators;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.PathFilter;
 import org.apache.hadoop.fs.RemoteIterator;
 
 import java.io.FileNotFoundException;
@@ -28,24 +31,18 @@ import java.util.Collections;
 import java.util.Deque;
 import java.util.Iterator;
 
+import static com.facebook.presto.hive.HiveErrorCode.HIVE_FILESYSTEM_ERROR;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_FILE_NOT_FOUND;
-import static com.facebook.presto.hive.MetastoreErrorCode.HIVE_FILESYSTEM_ERROR;
 import static java.util.Objects.requireNonNull;
 
 public class HiveFileIterator
         extends AbstractIterator<HiveFileInfo>
 {
-    public enum NestedDirectoryPolicy
-    {
-        IGNORED,
-        RECURSE,
-        FAIL
-    }
-
     private final Deque<Path> paths = new ArrayDeque<>();
     private final ListDirectoryOperation listDirectoryOperation;
     private final NamenodeStats namenodeStats;
     private final NestedDirectoryPolicy nestedDirectoryPolicy;
+    private final PathFilter pathFilter;
 
     private Iterator<HiveFileInfo> remoteIterator = Collections.emptyIterator();
 
@@ -53,12 +50,14 @@ public class HiveFileIterator
             Path path,
             ListDirectoryOperation listDirectoryOperation,
             NamenodeStats namenodeStats,
-            NestedDirectoryPolicy nestedDirectoryPolicy)
+            NestedDirectoryPolicy nestedDirectoryPolicy,
+            PathFilter pathFilter)
     {
         paths.addLast(requireNonNull(path, "path is null"));
         this.listDirectoryOperation = requireNonNull(listDirectoryOperation, "listDirectoryOperation is null");
         this.namenodeStats = requireNonNull(namenodeStats, "namenodeStats is null");
         this.nestedDirectoryPolicy = requireNonNull(nestedDirectoryPolicy, "nestedDirectoryPolicy is null");
+        this.pathFilter = requireNonNull(pathFilter, "pathFilter is null");
     }
 
     @Override
@@ -92,14 +91,14 @@ public class HiveFileIterator
             if (paths.isEmpty()) {
                 return endOfData();
             }
-            remoteIterator = getLocatedFileStatusRemoteIterator(paths.removeFirst());
+            remoteIterator = getLocatedFileStatusRemoteIterator(paths.removeFirst(), pathFilter);
         }
     }
 
-    private Iterator<HiveFileInfo> getLocatedFileStatusRemoteIterator(Path path)
+    private Iterator<HiveFileInfo> getLocatedFileStatusRemoteIterator(Path path, PathFilter pathFilter)
     {
         try (TimeStat.BlockTimer ignored = namenodeStats.getListLocatedStatus().time()) {
-            return new FileStatusIterator(path, listDirectoryOperation, namenodeStats);
+            return Iterators.filter(new FileStatusIterator(path, listDirectoryOperation, namenodeStats), input -> pathFilter.accept(input.getPath()));
         }
     }
 

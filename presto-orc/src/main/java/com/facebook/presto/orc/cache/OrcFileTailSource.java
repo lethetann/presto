@@ -23,6 +23,6 @@ import java.util.Optional;
 
 public interface OrcFileTailSource
 {
-    OrcFileTail getOrcFileTail(OrcDataSource orcDataSource, MetadataReader metadataReader, Optional<OrcWriteValidation> writeValidation)
+    OrcFileTail getOrcFileTail(OrcDataSource orcDataSource, MetadataReader metadataReader, Optional<OrcWriteValidation> writeValidation, boolean cacheable)
             throws IOException;
 }

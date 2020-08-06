@@ -143,6 +143,25 @@ General Aggregate Functions
 
     The state type must be a boolean, integer, floating-point, or date/time/interval.
 
+.. function:: set_agg(x) -> array<[same as input]>
+
+        Returns an array created from the distinct input ``x`` elements.
+
+.. function:: set_union(array(T)) -> array(T)
+
+    Returns an array of all the distinct values contained in each array of the input
+
+    Example::
+
+        SELECT set_union(elements)
+        FROM (
+            VALUES
+                ARRAY[1, 2, 3],
+                ARRAY[2, 3, 4]
+        ) AS t(elements);
+
+    Returns ARRAY[1, 2, 3, 4]
+
 .. function:: sum(x) -> [same as input]
 
     Returns the sum of all input values.
@@ -211,11 +230,24 @@ Approximate Aggregate Functions
     given ``percentage``. The value of ``percentage`` must be between zero and
     one and must be constant for all input rows.
 
+.. function:: approx_percentile(x, percentage, accuracy) -> [same as x]
+
+    As ``approx_percentile(x, percentage)``, but with a maximum rank error of
+    ``accuracy``. The value of ``accuracy`` must be between zero and one
+    (exclusive) and must be constant for all input rows. Note that a lower
+    "accuracy" is really a lower error threshold, and thus more accurate. The
+    default accuracy is ``0.01``.
+
 .. function:: approx_percentile(x, percentages) -> array<[same as x]>
 
     Returns the approximate percentile for all input values of ``x`` at each of
     the specified percentages. Each element of the ``percentages`` array must be
     between zero and one, and the array must be constant for all input rows.
+
+.. function:: approx_percentile(x, percentages, accuracy) -> array<[same as x]>
+
+    As ``approx_percentile(x, percentages)``, but with a maximum rank error of
+    ``accuracy``.
 
 .. function:: approx_percentile(x, w, percentage) -> [same as x]
 
@@ -227,13 +259,8 @@ Approximate Aggregate Functions
 
 .. function:: approx_percentile(x, w, percentage, accuracy) -> [same as x]
 
-    Returns the approximate weighed percentile for all input values of ``x``
-    using the per-item weight ``w`` at the percentage ``p``, with a maximum rank
-    error of ``accuracy``. The weight must be an integer value of at least one.
-    It is effectively a replication count for the value ``x`` in the percentile
-    set. The value of ``p`` must be between zero and one and must be constant
-    for all input rows. ``accuracy`` must be a value greater than zero and less
-    than one, and it must be constant for all input rows.
+    As ``approx_percentile(x, w, percentage)``, but with a maximum rank error of
+    ``accuracy``.
 
 .. function:: approx_percentile(x, w, percentages) -> array<[same as x]>
 
@@ -244,6 +271,12 @@ Approximate Aggregate Functions
     Each element of the array must be between zero and one, and the array must
     be constant for all input rows.
 
+.. function:: approx_percentile(x, w, percentages, accuracy) -> array<[same as x]>
+
+    As ``approx_percentile(x, w, percentages)``, but with a maximum rank error of
+    ``accuracy``.
+
+
 .. function:: approx_set(x) -> HyperLogLog
     :noindex:
 
@@ -253,6 +286,11 @@ Approximate Aggregate Functions
     :noindex:
 
     See :doc:`hyperloglog`.
+
+.. function:: khyperloglog_agg(x) -> KHyperLogLog
+    :noindex:
+
+    See :doc:`khyperloglog`.
 
 .. function:: merge(qdigest(T)) -> qdigest(T)
     :noindex:
@@ -482,7 +520,7 @@ To find the `ROC curve <https://en.wikipedia.org/wiki/Receiver_operating_charact
     .. math ::
 
         {
-            \sum_{i \;|\; x_i \leq t_j \bigwedge y_i = 0} \left[ w_i \right]
+            \sum_{i \;|\; x_i > t_j \bigwedge y_i = 0} \left[ w_i \right]
             \over
             \sum_{i \;|\; y_i = 0} \left[ w_i \right]
         },

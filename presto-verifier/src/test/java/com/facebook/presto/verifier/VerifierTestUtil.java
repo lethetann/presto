@@ -14,19 +14,48 @@
 package com.facebook.presto.verifier;
 
 import com.facebook.presto.Session;
+import com.facebook.presto.block.BlockEncodingManager;
+import com.facebook.presto.common.type.TypeManager;
+import com.facebook.presto.metadata.FunctionManager;
 import com.facebook.presto.plugin.memory.MemoryPlugin;
+import com.facebook.presto.sql.analyzer.FeaturesConfig;
+import com.facebook.presto.sql.parser.ParsingOptions;
+import com.facebook.presto.sql.parser.SqlParser;
+import com.facebook.presto.sql.parser.SqlParserOptions;
+import com.facebook.presto.sql.tree.QualifiedName;
 import com.facebook.presto.testing.mysql.MySqlOptions;
 import com.facebook.presto.testing.mysql.TestingMySqlServer;
 import com.facebook.presto.tests.StandaloneQueryRunner;
+import com.facebook.presto.type.TypeRegistry;
+import com.facebook.presto.verifier.checksum.ArrayColumnValidator;
+import com.facebook.presto.verifier.checksum.ChecksumValidator;
+import com.facebook.presto.verifier.checksum.ColumnValidator;
+import com.facebook.presto.verifier.checksum.FloatingPointColumnValidator;
+import com.facebook.presto.verifier.checksum.MapColumnValidator;
+import com.facebook.presto.verifier.checksum.RowColumnValidator;
+import com.facebook.presto.verifier.checksum.SimpleColumnValidator;
+import com.facebook.presto.verifier.framework.Column;
+import com.facebook.presto.verifier.framework.QueryBundle;
+import com.facebook.presto.verifier.framework.VerifierConfig;
 import com.facebook.presto.verifier.source.MySqlSourceQueryConfig;
 import com.facebook.presto.verifier.source.VerifierDao;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import io.airlift.units.Duration;
 import org.jdbi.v3.core.Handle;
 import org.jdbi.v3.core.Jdbi;
 import org.jdbi.v3.sqlobject.SqlObjectPlugin;
 
+import javax.inject.Provider;
+
+import java.util.HashMap;
+import java.util.Map;
+
+import static com.facebook.presto.sql.parser.IdentifierSymbol.AT_SIGN;
+import static com.facebook.presto.sql.parser.IdentifierSymbol.COLON;
+import static com.facebook.presto.sql.parser.ParsingOptions.DecimalLiteralTreatment.AS_DOUBLE;
 import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
+import static com.facebook.presto.verifier.framework.ClusterType.CONTROL;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
 public class VerifierTestUtil
@@ -36,13 +65,20 @@ public class VerifierTestUtil
     public static final String XDB = "presto";
     public static final String VERIFIER_QUERIES_TABLE = "verifier_queries";
 
+    public static final QueryBundle TEST_BUNDLE = new QueryBundle(
+            QualifiedName.of("test"),
+            ImmutableList.of(),
+            new SqlParser(new SqlParserOptions().allowIdentifierSymbol(AT_SIGN, COLON)).createStatement(
+                    "INSERT INTO test SELECT * FROM source",
+                    ParsingOptions.builder().setDecimalLiteralTreatment(AS_DOUBLE).build()),
+            ImmutableList.of(),
+            CONTROL);
+
     private static final MySqlOptions MY_SQL_OPTIONS = MySqlOptions.builder()
             .setCommandTimeout(new Duration(90, SECONDS))
             .build();
 
-    private VerifierTestUtil()
-    {
-    }
+    private VerifierTestUtil() {}
 
     public static StandaloneQueryRunner setupPresto()
             throws Exception
@@ -95,5 +131,25 @@ public class VerifierTestUtil
     public static void truncateVerifierQueries(Handle handle)
     {
         handle.execute("DELETE FROM verifier_queries");
+    }
+
+    public static ChecksumValidator createChecksumValidator(VerifierConfig verifierConfig)
+    {
+        Map<Column.Category, Provider<ColumnValidator>> lazyValidators = new HashMap<>();
+        Map<Column.Category, Provider<ColumnValidator>> validators = ImmutableMap.of(
+                Column.Category.SIMPLE, SimpleColumnValidator::new,
+                Column.Category.FLOATING_POINT, () -> new FloatingPointColumnValidator(verifierConfig),
+                Column.Category.ARRAY, ArrayColumnValidator::new,
+                Column.Category.ROW, () -> new RowColumnValidator(lazyValidators),
+                Column.Category.MAP, MapColumnValidator::new);
+        lazyValidators.putAll(validators);
+        return new ChecksumValidator(validators);
+    }
+
+    public static TypeManager createTypeManager()
+    {
+        TypeManager typeManager = new TypeRegistry();
+        new FunctionManager(typeManager, new BlockEncodingManager(typeManager), new FeaturesConfig());
+        return typeManager;
     }
 }

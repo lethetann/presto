@@ -13,7 +13,14 @@
  */
 package com.facebook.presto.orc.reader;
 
-import com.facebook.presto.memory.context.LocalMemoryContext;
+import com.facebook.presto.common.GenericInternalException;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockLease;
+import com.facebook.presto.common.block.ClosingBlockLease;
+import com.facebook.presto.common.block.RunLengthEncodedBlock;
+import com.facebook.presto.common.block.VariableWidthBlock;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.orc.OrcLocalMemoryContext;
 import com.facebook.presto.orc.StreamDescriptor;
 import com.facebook.presto.orc.TupleDomainFilter;
 import com.facebook.presto.orc.metadata.ColumnEncoding;
@@ -23,30 +30,22 @@ import com.facebook.presto.orc.stream.ByteArrayInputStream;
 import com.facebook.presto.orc.stream.InputStreamSource;
 import com.facebook.presto.orc.stream.InputStreamSources;
 import com.facebook.presto.orc.stream.LongInputStream;
-import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockLease;
-import com.facebook.presto.spi.block.ClosingBlockLease;
-import com.facebook.presto.spi.block.RunLengthEncodedBlock;
-import com.facebook.presto.spi.block.VariableWidthBlock;
-import com.facebook.presto.spi.type.Type;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
 import io.airlift.units.DataSize;
 import org.openjdk.jol.info.ClassLayout;
 
 import java.io.IOException;
-import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
-import static com.facebook.presto.array.Arrays.ensureCapacity;
+import static com.facebook.presto.orc.array.Arrays.ensureCapacity;
 import static com.facebook.presto.orc.metadata.Stream.StreamKind.DATA;
 import static com.facebook.presto.orc.metadata.Stream.StreamKind.LENGTH;
 import static com.facebook.presto.orc.metadata.Stream.StreamKind.PRESENT;
 import static com.facebook.presto.orc.reader.SelectiveStreamReaders.initializeOutputPositions;
 import static com.facebook.presto.orc.reader.SliceSelectiveStreamReader.computeTruncatedLength;
 import static com.facebook.presto.orc.stream.MissingInputStreamSource.missingStreamSource;
-import static com.facebook.presto.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static io.airlift.slice.SizeOf.sizeOf;
@@ -81,7 +80,7 @@ public class SliceDirectSelectiveStreamReader
     private LongInputStream lengthStream;
 
     private boolean rowGroupOpen;
-    private LocalMemoryContext systemMemoryContext;
+    private OrcLocalMemoryContext systemMemoryContext;
     private boolean[] nulls;
 
     private int[] outputPositions;
@@ -96,7 +95,7 @@ public class SliceDirectSelectiveStreamReader
     private Slice dataAsSlice;          // data array wrapped in Slice
     private boolean valuesInUse;
 
-    public SliceDirectSelectiveStreamReader(StreamDescriptor streamDescriptor, Optional<TupleDomainFilter> filter, Optional<Type> outputType, LocalMemoryContext newLocalMemoryContext)
+    public SliceDirectSelectiveStreamReader(StreamDescriptor streamDescriptor, Optional<TupleDomainFilter> filter, Optional<Type> outputType, OrcLocalMemoryContext newLocalMemoryContext)
     {
         this.streamDescriptor = requireNonNull(streamDescriptor, "streamDescriptor is null");
         this.filter = requireNonNull(filter, "filter is null").orElse(null);
@@ -428,6 +427,12 @@ public class SliceDirectSelectiveStreamReader
     @Override
     public void close()
     {
+        dataAsSlice = null;
+        data = null;
+        lengthVector = null;
+        isNullVector = null;
+        offsets = null;
+        outputPositions = null;
         systemMemoryContext.close();
     }
 
@@ -442,7 +447,7 @@ public class SliceDirectSelectiveStreamReader
     }
 
     @Override
-    public void startStripe(InputStreamSources dictionaryStreamSources, List<ColumnEncoding> encoding)
+    public void startStripe(InputStreamSources dictionaryStreamSources, Map<Integer, ColumnEncoding> encoding)
     {
         presentStreamSource = missingStreamSource(BooleanInputStream.class);
         lengthStreamSource = missingStreamSource(LongInputStream.class);
@@ -500,15 +505,26 @@ public class SliceDirectSelectiveStreamReader
             lengthVector = ensureCapacity(lengthVector, nonNullCount);
             lengthStream.nextIntVector(nonNullCount, lengthVector, 0);
 
-            //TODO calculate totalLength for only requested positions
-            for (int i = 0; i < nonNullCount; i++) {
-                totalLength += lengthVector[i];
-                maxLength = Math.max(maxLength, lengthVector[i]);
+            int positionIndex = 0;
+            int lengthIndex = 0;
+            for (int i = 0; i < totalPositions; i++) {
+                boolean isNotNull = nullCount == 0 || !isNullVector[i];
+                if (i == positions[positionIndex]) {
+                    if (isNotNull) {
+                        totalLength += lengthVector[lengthIndex];
+                        maxLength = Math.max(maxLength, lengthVector[lengthIndex]);
+                        lengthIndex++;
+                    }
+                    positionIndex++;
+                }
+                else if (isNotNull) {
+                    lengthIndex++;
+                }
             }
 
+            // TODO Do not throw if outputRequired == false
             if (totalLength > ONE_GIGABYTE) {
-                throw new PrestoException(
-                        GENERIC_INTERNAL_ERROR,
+                throw new GenericInternalException(
                         format("Values in column \"%s\" are too large to process for Presto. %s column values are larger than 1GB [%s]",
                                 streamDescriptor.getFieldName(), positionCount,
                                 streamDescriptor.getOrcDataSourceId()));

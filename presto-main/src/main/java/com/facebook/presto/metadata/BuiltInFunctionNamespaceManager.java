@@ -13,7 +13,16 @@
  */
 package com.facebook.presto.metadata;
 
-import com.facebook.presto.block.BlockSerdeUtil;
+import com.facebook.presto.common.CatalogSchemaName;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockEncodingSerde;
+import com.facebook.presto.common.block.BlockSerdeUtil;
+import com.facebook.presto.common.function.OperatorType;
+import com.facebook.presto.common.function.QualifiedFunctionName;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeManager;
+import com.facebook.presto.common.type.TypeSignature;
+import com.facebook.presto.expressions.DynamicFilters.DynamicFilterPlaceholderFunction;
 import com.facebook.presto.operator.aggregation.ApproximateCountDistinctAggregation;
 import com.facebook.presto.operator.aggregation.ApproximateDoublePercentileAggregations;
 import com.facebook.presto.operator.aggregation.ApproximateDoublePercentileArrayAggregations;
@@ -28,6 +37,7 @@ import com.facebook.presto.operator.aggregation.BitwiseOrAggregation;
 import com.facebook.presto.operator.aggregation.BooleanAndAggregation;
 import com.facebook.presto.operator.aggregation.BooleanOrAggregation;
 import com.facebook.presto.operator.aggregation.CentralMomentsAggregation;
+import com.facebook.presto.operator.aggregation.ClassificationFallOutAggregation;
 import com.facebook.presto.operator.aggregation.ClassificationMissRateAggregation;
 import com.facebook.presto.operator.aggregation.ClassificationPrecisionAggregation;
 import com.facebook.presto.operator.aggregation.ClassificationRecallAggregation;
@@ -51,6 +61,7 @@ import com.facebook.presto.operator.aggregation.LongSumAggregation;
 import com.facebook.presto.operator.aggregation.MaxDataSizeForStats;
 import com.facebook.presto.operator.aggregation.MergeHyperLogLogAggregation;
 import com.facebook.presto.operator.aggregation.MergeQuantileDigestFunction;
+import com.facebook.presto.operator.aggregation.MergeTDigestFunction;
 import com.facebook.presto.operator.aggregation.RealCorrelationAggregation;
 import com.facebook.presto.operator.aggregation.RealCovarianceAggregation;
 import com.facebook.presto.operator.aggregation.RealGeometricMeanAggregations;
@@ -135,12 +146,15 @@ import com.facebook.presto.operator.scalar.SessionFunctions;
 import com.facebook.presto.operator.scalar.SplitToMapFunction;
 import com.facebook.presto.operator.scalar.SplitToMultimapFunction;
 import com.facebook.presto.operator.scalar.StringFunctions;
+import com.facebook.presto.operator.scalar.TDigestFunctions;
 import com.facebook.presto.operator.scalar.TryFunction;
 import com.facebook.presto.operator.scalar.TypeOfFunction;
 import com.facebook.presto.operator.scalar.UrlFunctions;
 import com.facebook.presto.operator.scalar.VarbinaryFunctions;
 import com.facebook.presto.operator.scalar.WilsonInterval;
 import com.facebook.presto.operator.scalar.WordStemFunction;
+import com.facebook.presto.operator.scalar.sql.ArrayArithmeticFunctions;
+import com.facebook.presto.operator.scalar.sql.MapNormalizeFunction;
 import com.facebook.presto.operator.window.CumulativeDistributionFunction;
 import com.facebook.presto.operator.window.DenseRankFunction;
 import com.facebook.presto.operator.window.FirstValueFunction;
@@ -154,23 +168,20 @@ import com.facebook.presto.operator.window.RankFunction;
 import com.facebook.presto.operator.window.RowNumberFunction;
 import com.facebook.presto.operator.window.SqlWindowFunction;
 import com.facebook.presto.operator.window.WindowFunctionSupplier;
-import com.facebook.presto.spi.CatalogSchemaName;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockEncodingSerde;
+import com.facebook.presto.spi.function.AlterRoutineCharacteristics;
 import com.facebook.presto.spi.function.FunctionHandle;
+import com.facebook.presto.spi.function.FunctionImplementationType;
 import com.facebook.presto.spi.function.FunctionMetadata;
 import com.facebook.presto.spi.function.FunctionNamespaceManager;
 import com.facebook.presto.spi.function.FunctionNamespaceTransactionHandle;
-import com.facebook.presto.spi.function.OperatorType;
-import com.facebook.presto.spi.function.QualifiedFunctionName;
+import com.facebook.presto.spi.function.Parameter;
 import com.facebook.presto.spi.function.ScalarFunctionImplementation;
 import com.facebook.presto.spi.function.Signature;
 import com.facebook.presto.spi.function.SqlFunction;
+import com.facebook.presto.spi.function.SqlFunctionVisibility;
 import com.facebook.presto.spi.function.SqlInvokedFunction;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeManager;
-import com.facebook.presto.spi.type.TypeSignature;
+import com.facebook.presto.spi.function.SqlInvokedScalarFunctionImplementation;
 import com.facebook.presto.sql.analyzer.FeaturesConfig;
 import com.facebook.presto.sql.analyzer.TypeSignatureProvider;
 import com.facebook.presto.type.BigintOperators;
@@ -191,6 +202,7 @@ import com.facebook.presto.type.LikeFunctions;
 import com.facebook.presto.type.QuantileDigestOperators;
 import com.facebook.presto.type.RealOperators;
 import com.facebook.presto.type.SmallintOperators;
+import com.facebook.presto.type.TDigestOperators;
 import com.facebook.presto.type.TimeOperators;
 import com.facebook.presto.type.TimeWithTimeZoneOperators;
 import com.facebook.presto.type.TimestampOperators;
@@ -199,6 +211,10 @@ import com.facebook.presto.type.TinyintOperators;
 import com.facebook.presto.type.UnknownOperators;
 import com.facebook.presto.type.VarbinaryOperators;
 import com.facebook.presto.type.VarcharOperators;
+import com.facebook.presto.type.khyperloglog.KHyperLogLogAggregationFunction;
+import com.facebook.presto.type.khyperloglog.KHyperLogLogFunctions;
+import com.facebook.presto.type.khyperloglog.KHyperLogLogOperators;
+import com.facebook.presto.type.khyperloglog.MergeKHyperLogLogAggregationFunction;
 import com.facebook.presto.type.setdigest.BuildSetDigestAggregation;
 import com.facebook.presto.type.setdigest.MergeSetDigestAggregation;
 import com.facebook.presto.type.setdigest.SetDigestFunctions;
@@ -222,6 +238,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import static com.facebook.presto.common.function.OperatorType.tryGetOperatorType;
+import static com.facebook.presto.common.type.TypeSignature.parseTypeSignature;
 import static com.facebook.presto.metadata.SignatureBinder.applyBoundVariables;
 import static com.facebook.presto.operator.aggregation.ArbitraryAggregationFunction.ARBITRARY_AGGREGATION;
 import static com.facebook.presto.operator.aggregation.ChecksumAggregationFunction.CHECKSUM_AGGREGATION;
@@ -239,6 +257,11 @@ import static com.facebook.presto.operator.aggregation.QuantileDigestAggregation
 import static com.facebook.presto.operator.aggregation.QuantileDigestAggregationFunction.QDIGEST_AGG_WITH_WEIGHT_AND_ERROR;
 import static com.facebook.presto.operator.aggregation.RealAverageAggregation.REAL_AVERAGE_AGGREGATION;
 import static com.facebook.presto.operator.aggregation.ReduceAggregationFunction.REDUCE_AGG;
+import static com.facebook.presto.operator.aggregation.TDigestAggregationFunction.TDIGEST_AGG;
+import static com.facebook.presto.operator.aggregation.TDigestAggregationFunction.TDIGEST_AGG_WITH_WEIGHT;
+import static com.facebook.presto.operator.aggregation.TDigestAggregationFunction.TDIGEST_AGG_WITH_WEIGHT_AND_COMPRESSION;
+import static com.facebook.presto.operator.aggregation.arrayagg.SetAggregationFunction.SET_AGG;
+import static com.facebook.presto.operator.aggregation.arrayagg.SetUnionFunction.SET_UNION;
 import static com.facebook.presto.operator.aggregation.minmaxby.MaxByAggregationFunction.MAX_BY;
 import static com.facebook.presto.operator.aggregation.minmaxby.MaxByNAggregationFunction.MAX_BY_N_AGGREGATION;
 import static com.facebook.presto.operator.aggregation.minmaxby.MinByAggregationFunction.MIN_BY;
@@ -300,11 +323,11 @@ import static com.facebook.presto.operator.window.AggregateWindowFunction.suppli
 import static com.facebook.presto.spi.StandardErrorCode.FUNCTION_IMPLEMENTATION_MISSING;
 import static com.facebook.presto.spi.StandardErrorCode.GENERIC_USER_ERROR;
 import static com.facebook.presto.spi.function.FunctionImplementationType.BUILTIN;
+import static com.facebook.presto.spi.function.FunctionImplementationType.SQL;
 import static com.facebook.presto.spi.function.FunctionKind.AGGREGATE;
 import static com.facebook.presto.spi.function.FunctionKind.SCALAR;
 import static com.facebook.presto.spi.function.FunctionKind.WINDOW;
-import static com.facebook.presto.spi.function.OperatorType.tryGetOperatorType;
-import static com.facebook.presto.spi.type.TypeSignature.parseTypeSignature;
+import static com.facebook.presto.spi.function.SqlFunctionVisibility.HIDDEN;
 import static com.facebook.presto.sql.analyzer.TypeSignatureProvider.fromTypeSignatures;
 import static com.facebook.presto.sql.planner.LiteralEncoder.MAGIC_LITERAL_FUNCTION_PREFIX;
 import static com.facebook.presto.type.DecimalCasts.BIGINT_TO_DECIMAL_CAST;
@@ -352,20 +375,21 @@ import static com.facebook.presto.type.TypeUtils.resolveTypes;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Throwables.throwIfInstanceOf;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.TimeUnit.HOURS;
 
 @ThreadSafe
 public class BuiltInFunctionNamespaceManager
-        implements FunctionNamespaceManager<BuiltInFunction>
+        implements FunctionNamespaceManager<SqlFunction>
 {
     public static final CatalogSchemaName DEFAULT_NAMESPACE = new CatalogSchemaName("presto", "default");
-    public static final String NAME = "_builtin";
+    public static final String ID = "builtin";
 
     private final TypeManager typeManager;
     private final LoadingCache<Signature, SpecializedFunctionKey> specializedFunctionKeyCache;
-    private final LoadingCache<SpecializedFunctionKey, BuiltInScalarFunctionImplementation> specializedScalarCache;
+    private final LoadingCache<SpecializedFunctionKey, ScalarFunctionImplementation> specializedScalarCache;
     private final LoadingCache<SpecializedFunctionKey, InternalAggregationFunction> specializedAggregationCache;
     private final LoadingCache<SpecializedFunctionKey, WindowFunctionSupplier> specializedWindowCache;
     private final MagicLiteralFunction magicLiteralFunction;
@@ -395,8 +419,15 @@ public class BuiltInFunctionNamespaceManager
         specializedScalarCache = CacheBuilder.newBuilder()
                 .maximumSize(1000)
                 .expireAfterWrite(1, HOURS)
-                .build(CacheLoader.from(key -> ((SqlScalarFunction) key.getFunction())
-                        .specialize(key.getBoundVariables(), key.getArity(), typeManager, functionManager)));
+                .build(CacheLoader.from(key -> {
+                    checkArgument(
+                            key.getFunction() instanceof SqlScalarFunction || key.getFunction() instanceof SqlInvokedFunction,
+                            "Unsupported scalar function class: %s",
+                            key.getFunction().getClass());
+                    return key.getFunction() instanceof SqlScalarFunction
+                            ? ((SqlScalarFunction) key.getFunction()).specialize(key.getBoundVariables(), key.getArity(), typeManager, functionManager)
+                            : new SqlInvokedScalarFunctionImplementation(((SqlInvokedFunction) key.getFunction()).getBody());
+                }));
 
         specializedAggregationCache = CacheBuilder.newBuilder()
                 .maximumSize(1000)
@@ -472,6 +503,7 @@ public class BuiltInFunctionNamespaceManager
                 .aggregates(BitwiseOrAggregation.class)
                 .aggregates(BitwiseAndAggregation.class)
                 .aggregates(ClassificationMissRateAggregation.class)
+                .aggregates(ClassificationFallOutAggregation.class)
                 .aggregates(ClassificationPrecisionAggregation.class)
                 .aggregates(ClassificationRecallAggregation.class)
                 .aggregates(ClassificationThresholdsAggregation.class)
@@ -618,6 +650,8 @@ public class BuiltInFunctionNamespaceManager
                 .function(ARRAY_FLATTEN_FUNCTION)
                 .function(ARRAY_CONCAT_FUNCTION)
                 .functions(ARRAY_CONSTRUCTOR, ARRAY_SUBSCRIPT, ARRAY_TO_JSON, JSON_TO_ARRAY, JSON_STRING_TO_ARRAY)
+                .function(SET_AGG)
+                .function(SET_UNION)
                 .function(new ArrayAggregationFunction(featuresConfig.isLegacyArrayAgg(), featuresConfig.getArrayAggGroupImplementation()))
                 .functions(new MapSubscriptOperator(featuresConfig.isLegacyMapSubscript()))
                 .functions(MAP_CONSTRUCTOR, MAP_TO_JSON, JSON_TO_MAP, JSON_STRING_TO_MAP)
@@ -661,7 +695,18 @@ public class BuiltInFunctionNamespaceManager
                 .aggregate(BuildSetDigestAggregation.class)
                 .scalars(SetDigestFunctions.class)
                 .scalars(SetDigestOperators.class)
-                .scalars(WilsonInterval.class);
+                .aggregates(MergeKHyperLogLogAggregationFunction.class)
+                .aggregates(KHyperLogLogAggregationFunction.class)
+                .scalars(KHyperLogLogFunctions.class)
+                .scalars(KHyperLogLogOperators.class)
+                .scalars(WilsonInterval.class)
+                .scalars(TDigestOperators.class)
+                .scalars(TDigestFunctions.class)
+                .functions(TDIGEST_AGG, TDIGEST_AGG_WITH_WEIGHT, TDIGEST_AGG_WITH_WEIGHT_AND_COMPRESSION)
+                .function(MergeTDigestFunction.MERGE)
+                .sqlInvokedScalar(MapNormalizeFunction.class)
+                .sqlInvokedScalars(ArrayArithmeticFunctions.class)
+                .scalar(DynamicFilterPlaceholderFunction.class);
 
         switch (featuresConfig.getRegexLibrary()) {
             case JONI:
@@ -681,7 +726,7 @@ public class BuiltInFunctionNamespaceManager
         registerBuiltInFunctions(builder.getFunctions());
     }
 
-    public synchronized void registerBuiltInFunctions(List<? extends BuiltInFunction> functions)
+    public synchronized void registerBuiltInFunctions(List<? extends SqlFunction> functions)
     {
         for (SqlFunction function : functions) {
             for (SqlFunction existingFunction : this.functions.list()) {
@@ -698,6 +743,12 @@ public class BuiltInFunctionNamespaceManager
     }
 
     @Override
+    public void alterFunction(QualifiedFunctionName functionName, Optional<List<TypeSignature>> parameterTypes, AlterRoutineCharacteristics alterRoutineCharacteristics)
+    {
+        throw new PrestoException(GENERIC_USER_ERROR, format("Cannot alter function in built-in function namespace: %s", functionName));
+    }
+
+    @Override
     public void dropFunction(QualifiedFunctionName functionName, Optional<List<TypeSignature>> parameterTypes, boolean exists)
     {
         throw new PrestoException(GENERIC_USER_ERROR, format("Cannot drop function in built-in function namespace: %s", functionName));
@@ -705,7 +756,7 @@ public class BuiltInFunctionNamespaceManager
 
     public String getName()
     {
-        return NAME;
+        return ID;
     }
 
     @Override
@@ -725,13 +776,13 @@ public class BuiltInFunctionNamespaceManager
     }
 
     @Override
-    public Collection<BuiltInFunction> listFunctions()
+    public Collection<SqlFunction> listFunctions()
     {
         return functions.list();
     }
 
     @Override
-    public Collection<BuiltInFunction> getFunctions(Optional<? extends FunctionNamespaceTransactionHandle> transactionHandle, QualifiedFunctionName functionName)
+    public Collection<SqlFunction> getFunctions(Optional<? extends FunctionNamespaceTransactionHandle> transactionHandle, QualifiedFunctionName functionName)
     {
         return functions.get(functionName);
     }
@@ -755,9 +806,14 @@ public class BuiltInFunctionNamespaceManager
             throwIfInstanceOf(e.getCause(), PrestoException.class);
             throw e;
         }
-        BuiltInFunction function = functionKey.getFunction();
+        SqlFunction function = functionKey.getFunction();
+        FunctionImplementationType implementationType = function instanceof SqlInvokedFunction ? SQL : BUILTIN;
+        Optional<List<String>> argumentNames = (function instanceof SqlInvokedFunction)
+                ? Optional.of(((SqlInvokedFunction) function).getParameters().stream().map(Parameter::getName).collect(toImmutableList()))
+                : Optional.empty();
         Optional<OperatorType> operatorType = tryGetOperatorType(signature.getName());
         if (operatorType.isPresent()) {
+            checkArgument(implementationType == BUILTIN, "Operator must be implemented as built-in, found: %s", implementationType);
             return new FunctionMetadata(
                     operatorType.get(),
                     signature.getArgumentTypes(),
@@ -771,9 +827,10 @@ public class BuiltInFunctionNamespaceManager
             return new FunctionMetadata(
                     signature.getName(),
                     signature.getArgumentTypes(),
+                    argumentNames,
                     signature.getReturnType(),
                     signature.getKind(),
-                    BUILTIN,
+                    implementationType,
                     function.isDeterministic(),
                     function.isCalledOnNullInput());
         }
@@ -818,7 +875,7 @@ public class BuiltInFunctionNamespaceManager
         return getScalarFunctionImplementation(((BuiltInFunctionHandle) functionHandle).getSignature());
     }
 
-    public BuiltInScalarFunctionImplementation getScalarFunctionImplementation(Signature signature)
+    public ScalarFunctionImplementation getScalarFunctionImplementation(Signature signature)
     {
         checkArgument(signature.getKind() == SCALAR, "%s is not a scalar function", signature);
         checkArgument(signature.getTypeVariableConstraints().isEmpty(), "%s has unbound type parameters", signature);
@@ -845,11 +902,11 @@ public class BuiltInFunctionNamespaceManager
 
     private SpecializedFunctionKey doGetSpecializedFunctionKey(Signature signature)
     {
-        Iterable<BuiltInFunction> candidates = getFunctions(null, signature.getName());
+        Iterable<SqlFunction> candidates = getFunctions(null, signature.getName());
         // search for exact match
         Type returnType = typeManager.getType(signature.getReturnType());
         List<TypeSignatureProvider> argumentTypeSignatureProviders = fromTypeSignatures(signature.getArgumentTypes());
-        for (BuiltInFunction candidate : candidates) {
+        for (SqlFunction candidate : candidates) {
             Optional<BoundVariables> boundVariables = new SignatureBinder(typeManager, candidate.getSignature(), false)
                     .bindVariables(argumentTypeSignatureProviders, returnType);
             if (boundVariables.isPresent()) {
@@ -860,7 +917,7 @@ public class BuiltInFunctionNamespaceManager
         // TODO: hack because there could be "type only" coercions (which aren't necessarily included as implicit casts),
         // so do a second pass allowing "type only" coercions
         List<Type> argumentTypes = resolveTypes(signature.getArgumentTypes(), typeManager);
-        for (BuiltInFunction candidate : candidates) {
+        for (SqlFunction candidate : candidates) {
             SignatureBinder binder = new SignatureBinder(typeManager, candidate.getSignature(), true);
             Optional<BoundVariables> boundVariables = binder.bindVariables(argumentTypeSignatureProviders, returnType);
             if (!boundVariables.isPresent()) {
@@ -919,23 +976,23 @@ public class BuiltInFunctionNamespaceManager
 
     private static class FunctionMap
     {
-        private final Multimap<QualifiedFunctionName, BuiltInFunction> functions;
+        private final Multimap<QualifiedFunctionName, SqlFunction> functions;
 
         public FunctionMap()
         {
             functions = ImmutableListMultimap.of();
         }
 
-        public FunctionMap(FunctionMap map, Iterable<? extends BuiltInFunction> functions)
+        public FunctionMap(FunctionMap map, Iterable<? extends SqlFunction> functions)
         {
-            this.functions = ImmutableListMultimap.<QualifiedFunctionName, BuiltInFunction>builder()
+            this.functions = ImmutableListMultimap.<QualifiedFunctionName, SqlFunction>builder()
                     .putAll(map.functions)
                     .putAll(Multimaps.index(functions, function -> function.getSignature().getName()))
                     .build();
 
             // Make sure all functions with the same name are aggregations or none of them are
-            for (Map.Entry<QualifiedFunctionName, Collection<BuiltInFunction>> entry : this.functions.asMap().entrySet()) {
-                Collection<BuiltInFunction> values = entry.getValue();
+            for (Map.Entry<QualifiedFunctionName, Collection<SqlFunction>> entry : this.functions.asMap().entrySet()) {
+                Collection<SqlFunction> values = entry.getValue();
                 long aggregations = values.stream()
                         .map(function -> function.getSignature().getKind())
                         .filter(kind -> kind == AGGREGATE)
@@ -944,12 +1001,12 @@ public class BuiltInFunctionNamespaceManager
             }
         }
 
-        public List<BuiltInFunction> list()
+        public List<SqlFunction> list()
         {
             return ImmutableList.copyOf(functions.values());
         }
 
-        public Collection<BuiltInFunction> get(QualifiedFunctionName name)
+        public Collection<SqlFunction> get(QualifiedFunctionName name)
         {
             return functions.get(name);
         }
@@ -967,9 +1024,9 @@ public class BuiltInFunctionNamespaceManager
         }
 
         @Override
-        public boolean isHidden()
+        public final SqlFunctionVisibility getVisibility()
         {
-            return true;
+            return HIDDEN;
         }
 
         @Override

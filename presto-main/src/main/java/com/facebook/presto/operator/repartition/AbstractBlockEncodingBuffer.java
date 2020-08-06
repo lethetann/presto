@@ -27,18 +27,19 @@
  */
 package com.facebook.presto.operator.repartition;
 
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.ByteArrayBlock;
-import com.facebook.presto.spi.block.ColumnarArray;
-import com.facebook.presto.spi.block.ColumnarMap;
-import com.facebook.presto.spi.block.ColumnarRow;
-import com.facebook.presto.spi.block.DictionaryBlock;
-import com.facebook.presto.spi.block.Int128ArrayBlock;
-import com.facebook.presto.spi.block.IntArrayBlock;
-import com.facebook.presto.spi.block.LongArrayBlock;
-import com.facebook.presto.spi.block.RunLengthEncodedBlock;
-import com.facebook.presto.spi.block.ShortArrayBlock;
-import com.facebook.presto.spi.block.VariableWidthBlock;
+import com.facebook.presto.common.block.ArrayAllocator;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.ByteArrayBlock;
+import com.facebook.presto.common.block.ColumnarArray;
+import com.facebook.presto.common.block.ColumnarMap;
+import com.facebook.presto.common.block.ColumnarRow;
+import com.facebook.presto.common.block.DictionaryBlock;
+import com.facebook.presto.common.block.Int128ArrayBlock;
+import com.facebook.presto.common.block.IntArrayBlock;
+import com.facebook.presto.common.block.LongArrayBlock;
+import com.facebook.presto.common.block.RunLengthEncodedBlock;
+import com.facebook.presto.common.block.ShortArrayBlock;
+import com.facebook.presto.common.block.VariableWidthBlock;
 import com.google.common.annotations.VisibleForTesting;
 import io.airlift.slice.SliceOutput;
 
@@ -49,13 +50,14 @@ import java.util.Arrays;
 import static com.facebook.presto.array.Arrays.ExpansionFactor.LARGE;
 import static com.facebook.presto.array.Arrays.ExpansionFactor.SMALL;
 import static com.facebook.presto.array.Arrays.ExpansionOption.INITIALIZE;
+import static com.facebook.presto.array.Arrays.ExpansionOption.NONE;
 import static com.facebook.presto.array.Arrays.ExpansionOption.PRESERVE;
 import static com.facebook.presto.array.Arrays.ensureCapacity;
 import static com.facebook.presto.operator.MoreByteArrays.fill;
 import static com.facebook.presto.operator.UncheckedByteArrays.setByteUnchecked;
+import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Verify.verify;
 import static io.airlift.slice.SizeOf.SIZE_OF_BYTE;
-import static io.airlift.slice.SizeOf.sizeOf;
 import static java.lang.String.format;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Objects.requireNonNull;
@@ -63,6 +65,15 @@ import static java.util.Objects.requireNonNull;
 public abstract class AbstractBlockEncodingBuffer
         implements BlockEncodingBuffer
 {
+    @VisibleForTesting
+    public static final double GRACE_FACTOR_FOR_MAX_BUFFER_CAPACITY = 1.2f;
+
+    // The allocator for internal buffers
+    protected final ArrayAllocator bufferAllocator;
+
+    // Boolean indicating whether this is a buffer for a nested level block.
+    protected final boolean isNested;
+
     // The block after peeling off the Dictionary or RLE wrappings.
     protected Block decodedBlock;
 
@@ -81,6 +92,9 @@ public abstract class AbstractBlockEncodingBuffer
 
     // Whether the positions array has already been mapped to mappedPositions
     protected boolean positionsMapped;
+
+    // Whether the buffers have been flushed
+    protected boolean flushed;
 
     // The positions (row numbers) of the incoming Block to be copied to this buffer.
     // All top level AbstractBlockEncodingBuffer for the same partition share the same positions array.
@@ -101,6 +115,9 @@ public abstract class AbstractBlockEncodingBuffer
     // The address offset in the nullsBuffer if new values are to be added.
     private int nullsBufferIndex;
 
+    // The target size for nullsBuffer
+    private int estimatedNullsBufferMaxCapacity;
+
     // For each batch we put the nulls values up to a multiple of 8 into nullsBuffer. The rest is kept in remainingNulls.
     private final boolean[] remainingNulls = new boolean[Byte.SIZE];
 
@@ -110,9 +127,18 @@ public abstract class AbstractBlockEncodingBuffer
     // Boolean indicating whether there are any null values in the nullsBuffer. It is possible that all values are non-null.
     private boolean hasEncodedNulls;
 
-    public static BlockEncodingBuffer createBlockEncodingBuffers(DecodedBlockNode decodedBlockNode)
+    protected abstract void setupDecodedBlockAndMapPositions(DecodedBlockNode decodedBlockNode, int partitionBufferCapacity, double decodedBlockPageSizeFraction);
+
+    protected AbstractBlockEncodingBuffer(ArrayAllocator bufferAllocator, boolean isNested)
+    {
+        this.bufferAllocator = requireNonNull(bufferAllocator, "bufferAllocator is null");
+        this.isNested = isNested;
+    }
+
+    public static BlockEncodingBuffer createBlockEncodingBuffers(DecodedBlockNode decodedBlockNode, ArrayAllocator bufferAllocator, boolean isNested)
     {
         requireNonNull(decodedBlockNode, "decodedBlockNode is null");
+        requireNonNull(bufferAllocator, "bufferAllocator is null");
 
         // decodedBlock could be a block or ColumnarArray/Map/Row
         Object decodedBlock = decodedBlockNode.getDecodedBlock();
@@ -133,46 +159,46 @@ public abstract class AbstractBlockEncodingBuffer
         verify(!(decodedBlock instanceof RunLengthEncodedBlock), "Nested RLEs and dictionaries are not supported");
 
         if (decodedBlock instanceof LongArrayBlock) {
-            return new LongArrayBlockEncodingBuffer();
+            return new LongArrayBlockEncodingBuffer(bufferAllocator, isNested);
         }
 
         if (decodedBlock instanceof Int128ArrayBlock) {
-            return new Int128ArrayBlockEncodingBuffer();
+            return new Int128ArrayBlockEncodingBuffer(bufferAllocator, isNested);
         }
 
         if (decodedBlock instanceof IntArrayBlock) {
-            return new IntArrayBlockEncodingBuffer();
+            return new IntArrayBlockEncodingBuffer(bufferAllocator, isNested);
         }
 
         if (decodedBlock instanceof ShortArrayBlock) {
-            return new ShortArrayBlockEncodingBuffer();
+            return new ShortArrayBlockEncodingBuffer(bufferAllocator, isNested);
         }
 
         if (decodedBlock instanceof ByteArrayBlock) {
-            return new ByteArrayBlockEncodingBuffer();
+            return new ByteArrayBlockEncodingBuffer(bufferAllocator, isNested);
         }
 
         if (decodedBlock instanceof VariableWidthBlock) {
-            return new VariableWidthBlockEncodingBuffer();
+            return new VariableWidthBlockEncodingBuffer(bufferAllocator, isNested);
         }
 
         if (decodedBlock instanceof ColumnarArray) {
-            return new ArrayBlockEncodingBuffer(decodedBlockNode);
+            return new ArrayBlockEncodingBuffer(decodedBlockNode, bufferAllocator, isNested);
         }
 
         if (decodedBlock instanceof ColumnarMap) {
-            return new MapBlockEncodingBuffer(decodedBlockNode);
+            return new MapBlockEncodingBuffer(decodedBlockNode, bufferAllocator, isNested);
         }
 
         if (decodedBlock instanceof ColumnarRow) {
-            return new RowBlockEncodingBuffer(decodedBlockNode);
+            return new RowBlockEncodingBuffer(decodedBlockNode, bufferAllocator, isNested);
         }
 
         throw new IllegalArgumentException("Unsupported encoding: " + decodedBlock.getClass().getSimpleName());
     }
 
     @Override
-    public void setupDecodedBlocksAndPositions(DecodedBlockNode decodedBlockNode, int[] positions, int positionCount)
+    public void setupDecodedBlocksAndPositions(DecodedBlockNode decodedBlockNode, int[] positions, int positionCount, int partitionBufferCapacity, long estimatedSerializedPageSize)
     {
         requireNonNull(decodedBlockNode, "decodedBlockNode is null");
         requireNonNull(positions, "positions is null");
@@ -182,7 +208,9 @@ public abstract class AbstractBlockEncodingBuffer
         this.positionsOffset = 0;
         this.positionsMapped = false;
 
-        setupDecodedBlockAndMapPositions(decodedBlockNode);
+        double decodedBlockPageSizeFraction = (decodedBlockNode.getEstimatedSerializedSizeInBytes()) / ((double) estimatedSerializedPageSize);
+
+        setupDecodedBlockAndMapPositions(decodedBlockNode, partitionBufferCapacity, decodedBlockPageSizeFraction);
     }
 
     @Override
@@ -190,12 +218,48 @@ public abstract class AbstractBlockEncodingBuffer
     {
         this.positionsOffset = positionsOffset;
         this.batchSize = batchSize;
+        this.flushed = false;
     }
 
-    protected void setupDecodedBlockAndMapPositions(DecodedBlockNode decodedBlockNode)
+    @Override
+    public String toString()
     {
-        requireNonNull(decodedBlockNode, "decodedBlockNode is null");
-        decodedBlock = (Block) mapPositionsToNestedBlock(decodedBlockNode).getDecodedBlock();
+        return toStringHelper(this)
+                .add("isNested", isNested)
+                .add("decodedBlock", mappedPositions == null ? "null" : decodedBlock)
+                .add("positionCount", positionCount)
+                .add("batchSize", batchSize)
+                .add("positionsOffset", positionsOffset)
+                .add("bufferedPositionCount", bufferedPositionCount)
+                .add("positionsMapped", positionsMapped)
+                .add("flushed", flushed)
+                .add("positionsCapacity", positions == null ? 0 : positions.length)
+                .add("mappedPositionsCapacity", mappedPositions == null ? 0 : mappedPositions.length)
+                .add("estimatedNullsBufferMaxCapacity", estimatedNullsBufferMaxCapacity)
+                .add("nullsBufferCapacity", nullsBuffer == null ? 0 : nullsBuffer.length)
+                .add("nullsBufferIndex", nullsBufferIndex)
+                .add("remainingNullsCount", remainingNullsCount)
+                .add("hasEncodedNulls", hasEncodedNulls)
+                .toString();
+    }
+
+    @VisibleForTesting
+    abstract int getEstimatedValueBufferMaxCapacity();
+
+    @VisibleForTesting
+    int getEstimatedNullsBufferMaxCapacity()
+    {
+        return estimatedNullsBufferMaxCapacity;
+    }
+
+    protected void setEstimatedNullsBufferMaxCapacity(int estimatedNullsBufferMaxCapacity)
+    {
+        this.estimatedNullsBufferMaxCapacity = estimatedNullsBufferMaxCapacity;
+    }
+
+    protected static int getEstimatedBufferMaxCapacity(double targetBufferSize, int unitSize, int positionSize)
+    {
+        return (int) (targetBufferSize * unitSize / positionSize * GRACE_FACTOR_FOR_MAX_BUFFER_CAPACITY);
     }
 
     /**
@@ -209,7 +273,7 @@ public abstract class AbstractBlockEncodingBuffer
 
         if (decodedObject instanceof DictionaryBlock) {
             DictionaryBlock dictionaryBlock = (DictionaryBlock) decodedObject;
-            mappedPositions = ensureCapacity(mappedPositions, positionCount);
+            mappedPositions = ensureCapacity(mappedPositions, positionCount, SMALL, NONE, bufferAllocator);
 
             for (int i = 0; i < positionCount; i++) {
                 mappedPositions[i] = dictionaryBlock.getId(positions[i]);
@@ -219,7 +283,7 @@ public abstract class AbstractBlockEncodingBuffer
         }
 
         if (decodedObject instanceof RunLengthEncodedBlock) {
-            mappedPositions = ensureCapacity(mappedPositions, positionCount, SMALL, INITIALIZE);
+            mappedPositions = ensureCapacity(mappedPositions, positionCount, SMALL, INITIALIZE, bufferAllocator);
             positionsMapped = true;
             return decodedBlockNode.getChildren().get(0);
         }
@@ -228,10 +292,13 @@ public abstract class AbstractBlockEncodingBuffer
         return decodedBlockNode;
     }
 
+    protected void ensurePositionsCapacity(int capacity)
+    {
+        positions = ensureCapacity(positions, capacity, SMALL, NONE, bufferAllocator);
+    }
+
     protected void appendPositionRange(int offset, int length)
     {
-        positions = ensureCapacity(positions, positionCount + length, LARGE, PRESERVE);
-
         for (int i = 0; i < length; i++) {
             positions[positionCount++] = offset + i;
         }
@@ -271,7 +338,7 @@ public abstract class AbstractBlockEncodingBuffer
         if (decodedBlock.mayHaveNull()) {
             // Write to nullsBuffer if there is a possibility to have nulls. It is possible that the
             // decodedBlock contains nulls, but rows that go into this partition don't. Write to nullsBuffer anyway.
-            nullsBuffer = ensureCapacity(nullsBuffer, (bufferedPositionCount + batchSize) / Byte.SIZE + 1, LARGE, PRESERVE);
+            nullsBuffer = ensureCapacity(nullsBuffer, (bufferedPositionCount + batchSize) / Byte.SIZE + 1, estimatedNullsBufferMaxCapacity, LARGE, PRESERVE, bufferAllocator);
 
             int bufferedNullsCount = nullsBufferIndex * Byte.SIZE + remainingNullsCount;
             if (bufferedPositionCount > bufferedNullsCount) {
@@ -285,8 +352,30 @@ public abstract class AbstractBlockEncodingBuffer
         else if (containsNull()) {
             // There were nulls in previously buffered rows, but for this batch there can't be any nulls.
             // Any how we need to append 0's for this batch.
-            nullsBuffer = ensureCapacity(nullsBuffer, (bufferedPositionCount + batchSize) / Byte.SIZE + 1, LARGE, PRESERVE);
+            nullsBuffer = ensureCapacity(nullsBuffer, (bufferedPositionCount + batchSize) / Byte.SIZE + 1, estimatedNullsBufferMaxCapacity, LARGE, PRESERVE, bufferAllocator);
+
             encodeNonNullsAsBits(batchSize);
+        }
+    }
+
+    @Override
+    public void noMoreBatches()
+    {
+        // Only the positions for nested level need to be recycled.
+        if (isNested && positions != null) {
+            bufferAllocator.returnArray(positions);
+            positions = null;
+        }
+
+        if (mappedPositions != null) {
+            bufferAllocator.returnArray(mappedPositions);
+            mappedPositions = null;
+        }
+
+        // Only when this is the last batch in the page and it filled the buffer, the buffers can be recycled.
+        if (flushed && nullsBuffer != null) {
+            bufferAllocator.returnArray(nullsBuffer);
+            nullsBuffer = null;
         }
     }
 
@@ -315,16 +404,6 @@ public abstract class AbstractBlockEncodingBuffer
         nullsBufferIndex = 0;
         remainingNullsCount = 0;
         hasEncodedNulls = false;
-    }
-
-    protected long getPositionsRetainedSizeInBytes()
-    {
-        return sizeOf(positions) + sizeOf(mappedPositions);
-    }
-
-    protected long getNullsBufferRetainedSizeInBytes()
-    {
-        return sizeOf(nullsBuffer) + sizeOf(remainingNulls);
     }
 
     protected long getNullsBufferSerializedSizeInBytes()

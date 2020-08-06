@@ -13,39 +13,37 @@
  */
 package com.facebook.presto.benchmark.framework;
 
+import com.google.common.collect.ImmutableMap;
 import org.jdbi.v3.core.mapper.reflect.ColumnName;
 import org.jdbi.v3.core.mapper.reflect.JdbiConstructor;
 
+import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
 import static java.util.Objects.requireNonNull;
 
 public class BenchmarkQuery
 {
-    private final String querySet;
     private final String name;
     private final String query;
     private final String catalog;
     private final String schema;
+    private final Map<String, String> sessionProperties;
 
     @JdbiConstructor
     public BenchmarkQuery(
-            @ColumnName("query_set") String querySet,
             @ColumnName("name") String name,
             @ColumnName("query") String query,
             @ColumnName("catalog") String catalog,
-            @ColumnName("schema") String schema)
+            @ColumnName("schema") String schema,
+            @ColumnName("session_properties") Optional<Map<String, String>> sessionProperties)
     {
-        this.querySet = requireNonNull(querySet, "querySet is null");
         this.name = requireNonNull(name, "name is null");
         this.query = clean(query);
         this.catalog = requireNonNull(catalog, "catalog is null");
         this.schema = requireNonNull(schema, "schema is null");
-    }
-
-    public String getQuerySet()
-    {
-        return querySet;
+        this.sessionProperties = sessionProperties.orElse(ImmutableMap.of());
     }
 
     public String getName()
@@ -68,6 +66,11 @@ public class BenchmarkQuery
         return schema;
     }
 
+    public Map<String, String> getSessionProperties()
+    {
+        return sessionProperties;
+    }
+
     @Override
     public boolean equals(Object obj)
     {
@@ -78,17 +81,17 @@ public class BenchmarkQuery
             return false;
         }
         BenchmarkQuery o = (BenchmarkQuery) obj;
-        return Objects.equals(querySet, o.querySet) &&
-                Objects.equals(name, o.name) &&
+        return Objects.equals(name, o.name) &&
                 Objects.equals(query, o.query) &&
                 Objects.equals(catalog, o.catalog) &&
-                Objects.equals(schema, o.schema);
+                Objects.equals(schema, o.schema) &&
+                Objects.equals(sessionProperties, o.sessionProperties);
     }
 
     @Override
     public int hashCode()
     {
-        return Objects.hash(querySet, name, query, catalog, schema);
+        return Objects.hash(name, query, catalog, schema, sessionProperties);
     }
 
     private static String clean(String sql)

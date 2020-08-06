@@ -15,11 +15,11 @@ package com.facebook.presto.operator;
 
 import com.facebook.presto.block.BlockAssertions;
 import com.facebook.presto.block.BlockAssertions.Encoding;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.PageBuilder;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.PageBuilder;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.Type;
 import com.google.common.collect.ImmutableList;
 
 import java.util.List;
@@ -29,7 +29,7 @@ import static com.facebook.presto.block.BlockAssertions.Encoding.RUN_LENGTH;
 import static com.facebook.presto.block.BlockAssertions.assertBlockEquals;
 import static com.facebook.presto.block.BlockAssertions.createAllNullsBlock;
 import static com.facebook.presto.block.BlockAssertions.createRandomBlockForType;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
 import static com.google.common.base.Verify.verify;
 import static java.lang.String.format;
 import static org.testng.Assert.assertEquals;
@@ -50,19 +50,19 @@ public final class PageAssertions
         }
     }
 
-    public static Page createPageWithRandomData(List<Type> types, int positionCount, boolean allowNulls)
+    public static Page createPageWithRandomData(List<Type> types, int positionCount, float primitiveNullRate, float nestedNullRate)
     {
-        return createPageWithRandomData(types, positionCount, true, false, allowNulls, false, ImmutableList.of());
+        return createPageWithRandomData(types, positionCount, true, false, primitiveNullRate, nestedNullRate, false, ImmutableList.of());
     }
 
-    public static Page createDictionaryPageWithRandomData(List<Type> types, int positionCount, boolean allowNulls)
+    public static Page createDictionaryPageWithRandomData(List<Type> types, int positionCount, float primitiveNullRate, float nestedNullRate)
     {
-        return createPageWithRandomData(types, positionCount, true, false, allowNulls, false, ImmutableList.of(DICTIONARY));
+        return createPageWithRandomData(types, positionCount, true, false, primitiveNullRate, nestedNullRate, false, ImmutableList.of(DICTIONARY));
     }
 
-    public static Page createRlePageWithRandomData(List<Type> types, int positionCount, boolean allowNulls)
+    public static Page createRlePageWithRandomData(List<Type> types, int positionCount, float primitiveNullRate, float nestedNullRate)
     {
-        return createPageWithRandomData(types, positionCount, true, false, allowNulls, false, ImmutableList.of(RUN_LENGTH));
+        return createPageWithRandomData(types, positionCount, true, false, primitiveNullRate, nestedNullRate, false, ImmutableList.of(RUN_LENGTH));
     }
 
     public static Page createPageWithRandomData(
@@ -70,7 +70,8 @@ public final class PageAssertions
             int positionCount,
             boolean addPreComputedHashBlock,
             boolean addNullBlock,
-            boolean allowNulls,
+            float primitiveNullRate,
+            float nestedNullRate,
             boolean useBlockView,
             List<Encoding> wrappings)
     {
@@ -81,11 +82,11 @@ public final class PageAssertions
         Block[] blocks = new Block[channelCount + preComputedChannelCount + nullChannelCount];
 
         if (addPreComputedHashBlock) {
-            blocks[0] = BlockAssertions.createRandomLongsBlock(positionCount, false);
+            blocks[0] = BlockAssertions.createRandomLongsBlock(positionCount, 0.0f);
         }
 
         for (int i = 0; i < channelCount; i++) {
-            blocks[i + preComputedChannelCount] = createRandomBlockForType(types.get(i), positionCount, allowNulls, useBlockView, wrappings);
+            blocks[i + preComputedChannelCount] = createRandomBlockForType(types.get(i), positionCount, primitiveNullRate, nestedNullRate, useBlockView, wrappings);
         }
 
         if (addNullBlock) {

@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.execution;
 
+import com.facebook.airlift.stats.Distribution;
 import com.facebook.airlift.stats.Distribution.DistributionSnapshot;
 import com.facebook.presto.operator.BlockedReason;
 import com.facebook.presto.operator.OperatorStats;
@@ -33,8 +34,10 @@ import java.util.Set;
 
 import static com.facebook.presto.execution.StageExecutionState.RUNNING;
 import static com.google.common.base.Preconditions.checkArgument;
+import static io.airlift.units.DataSize.Unit.BYTE;
 import static java.lang.Math.min;
 import static java.util.Objects.requireNonNull;
+import static java.util.concurrent.TimeUnit.NANOSECONDS;
 
 @Immutable
 public class StageExecutionStats
@@ -63,9 +66,12 @@ public class StageExecutionStats
 
     private final Duration totalScheduledTime;
     private final Duration totalCpuTime;
+    private final Duration retriedCpuTime;
     private final Duration totalBlockedTime;
     private final boolean fullyBlocked;
     private final Set<BlockedReason> blockedReasons;
+
+    private final DataSize totalAllocation;
 
     private final DataSize rawInputDataSize;
     private final long rawInputPositions;
@@ -109,9 +115,12 @@ public class StageExecutionStats
 
             @JsonProperty("totalScheduledTime") Duration totalScheduledTime,
             @JsonProperty("totalCpuTime") Duration totalCpuTime,
+            @JsonProperty("retriedCpuTime") Duration retriedCpuTime,
             @JsonProperty("totalBlockedTime") Duration totalBlockedTime,
             @JsonProperty("fullyBlocked") boolean fullyBlocked,
             @JsonProperty("blockedReasons") Set<BlockedReason> blockedReasons,
+
+            @JsonProperty("totalAllocation") DataSize totalAllocation,
 
             @JsonProperty("rawInputDataSize") DataSize rawInputDataSize,
             @JsonProperty("rawInputPositions") long rawInputPositions,
@@ -162,9 +171,12 @@ public class StageExecutionStats
 
         this.totalScheduledTime = requireNonNull(totalScheduledTime, "totalScheduledTime is null");
         this.totalCpuTime = requireNonNull(totalCpuTime, "totalCpuTime is null");
+        this.retriedCpuTime = requireNonNull(retriedCpuTime, "retriedCpuTime is null");
         this.totalBlockedTime = requireNonNull(totalBlockedTime, "totalBlockedTime is null");
         this.fullyBlocked = fullyBlocked;
         this.blockedReasons = ImmutableSet.copyOf(requireNonNull(blockedReasons, "blockedReasons is null"));
+
+        this.totalAllocation = requireNonNull(totalAllocation, "totalAllocation is null");
 
         this.rawInputDataSize = requireNonNull(rawInputDataSize, "rawInputDataSize is null");
         checkArgument(rawInputPositions >= 0, "rawInputPositions is negative");
@@ -295,6 +307,12 @@ public class StageExecutionStats
     }
 
     @JsonProperty
+    public Duration getRetriedCpuTime()
+    {
+        return retriedCpuTime;
+    }
+
+    @JsonProperty
     public Duration getTotalBlockedTime()
     {
         return totalBlockedTime;
@@ -310,6 +328,12 @@ public class StageExecutionStats
     public Set<BlockedReason> getBlockedReasons()
     {
         return blockedReasons;
+    }
+
+    @JsonProperty
+    public DataSize getTotalAllocation()
+    {
+        return totalAllocation;
     }
 
     @JsonProperty
@@ -396,6 +420,45 @@ public class StageExecutionStats
                 totalScheduledTime,
                 fullyBlocked,
                 blockedReasons,
+                totalAllocation,
                 progressPercentage);
+    }
+
+    public static StageExecutionStats zero(int stageId)
+    {
+        return new StageExecutionStats(
+                null,
+                new Distribution().snapshot(),
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                new DataSize(0, BYTE),
+                new DataSize(0, BYTE),
+                new DataSize(0, BYTE),
+                new Duration(0, NANOSECONDS),
+                new Duration(0, NANOSECONDS),
+                new Duration(0, NANOSECONDS),
+                new Duration(0, NANOSECONDS),
+                false,
+                ImmutableSet.of(),
+                new DataSize(0, BYTE),
+                new DataSize(0, BYTE),
+                0,
+                new DataSize(0, BYTE),
+                0,
+                new DataSize(0, BYTE),
+                new DataSize(0, BYTE),
+                0,
+                new DataSize(0, BYTE),
+                new StageGcStatistics(stageId, 0, 0, 0, 0, 0, 0, 0),
+                ImmutableList.of());
     }
 }

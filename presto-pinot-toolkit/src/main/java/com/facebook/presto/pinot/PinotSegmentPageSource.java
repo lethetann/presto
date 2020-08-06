@@ -13,20 +13,19 @@
  */
 package com.facebook.presto.pinot;
 
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.PageBuilder;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.pinot.PinotScatterGatherQueryClient.ErrorCode;
 import com.facebook.presto.spi.ConnectorPageSource;
 import com.facebook.presto.spi.ConnectorSession;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.PageBuilder;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.type.Type;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
-import org.apache.pinot.common.data.FieldSpec.DataType;
 import org.apache.pinot.common.response.ServerInstance;
-import org.apache.pinot.common.utils.DataSchema;
+import org.apache.pinot.common.utils.DataSchema.ColumnDataType;
 import org.apache.pinot.common.utils.DataTable;
 
 import java.util.ArrayList;
@@ -38,10 +37,15 @@ import java.util.Optional;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
+import static com.facebook.presto.pinot.PinotErrorCode.PINOT_DATA_FETCH_EXCEPTION;
+import static com.facebook.presto.pinot.PinotErrorCode.PINOT_EXCEPTION;
+import static com.facebook.presto.pinot.PinotErrorCode.PINOT_INSUFFICIENT_SERVER_RESPONSE;
+import static com.facebook.presto.pinot.PinotErrorCode.PINOT_INVALID_PQL_GENERATED;
+import static com.facebook.presto.pinot.PinotErrorCode.PINOT_UNCLASSIFIED_ERROR;
 import static com.facebook.presto.pinot.PinotErrorCode.PINOT_UNSUPPORTED_COLUMN_TYPE;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
 import static com.google.common.base.Preconditions.checkArgument;
 import static io.airlift.slice.Slices.utf8Slice;
 import static java.util.Objects.requireNonNull;
@@ -54,17 +58,17 @@ public class PinotSegmentPageSource
         implements ConnectorPageSource
 {
     private static final Map<ErrorCode, PinotErrorCode> PINOT_ERROR_CODE_MAP = ImmutableMap.of(
-            ErrorCode.PINOT_UNCLASSIFIED_ERROR, PinotErrorCode.PINOT_UNCLASSIFIED_ERROR,
-            ErrorCode.PINOT_INSUFFICIENT_SERVER_RESPONSE, PinotErrorCode.PINOT_INSUFFICIENT_SERVER_RESPONSE,
-            ErrorCode.PINOT_INVALID_PQL_GENERATED, PinotErrorCode.PINOT_INVALID_PQL_GENERATED);
+            ErrorCode.PINOT_UNCLASSIFIED_ERROR, PINOT_UNCLASSIFIED_ERROR,
+            ErrorCode.PINOT_INSUFFICIENT_SERVER_RESPONSE, PINOT_INSUFFICIENT_SERVER_RESPONSE,
+            ErrorCode.PINOT_INVALID_PQL_GENERATED, PINOT_INVALID_PQL_GENERATED);
 
     private final List<PinotColumnHandle> columnHandles;
+    private final List<Type> columnTypes;
     private final PinotConfig pinotConfig;
     private final PinotSplit split;
     private final PinotScatterGatherQueryClient pinotQueryClient;
     private final ConnectorSession session;
 
-    private List<Type> columnTypes;
     // dataTableList stores the dataTable returned from each server. Each dataTable is constructed to a Page, and then destroyed to save memory.
     private LinkedList<PinotDataTableWithSize> dataTableList = new LinkedList<>();
     private long completedBytes;
@@ -86,9 +90,12 @@ public class PinotSegmentPageSource
         this.pinotQueryClient = requireNonNull(pinotQueryClient, "pinotQueryClient is null");
         this.columnHandles = requireNonNull(columnHandles, "columnHandles is null");
         this.session = requireNonNull(session, "session is null");
+        this.columnTypes = columnHandles.stream()
+                .map(PinotSegmentPageSource::getTypeForBlock)
+                .collect(Collectors.toList());
     }
 
-    private static void checkExceptions(DataTable dataTable, PinotSplit split)
+    private static void checkExceptions(DataTable dataTable, PinotSplit split, boolean markDataFetchExceptionsAsRetriable)
     {
         Map<String, String> metadata = dataTable.getMetadata();
         List<String> exceptions = new ArrayList<>();
@@ -98,7 +105,18 @@ public class PinotSegmentPageSource
             }
         });
         if (!exceptions.isEmpty()) {
-            throw new PinotException(PinotErrorCode.PINOT_EXCEPTION, split.getSegmentPql(), String.format("Encountered %d pinot exceptions for split %s: %s", exceptions.size(), split, exceptions));
+            throw new PinotException(
+                markDataFetchExceptionsAsRetriable ? PINOT_DATA_FETCH_EXCEPTION : PINOT_EXCEPTION,
+                split.getSegmentPql(),
+                String.format("Encountered %d pinot exceptions for split %s: %s", exceptions.size(), split, exceptions));
+        }
+        int numColumnsExpected = split.getExpectedColumnHandles().size();
+        int numColumnsActual = dataTable.getDataSchema().size();
+        if (numColumnsActual != numColumnsExpected) {
+            throw new PinotException(
+                    PINOT_EXCEPTION,
+                    split.getSegmentPql(),
+                    String.format("Expected pinot to contain %d columns but got %d: %s", numColumnsExpected, numColumnsActual, dataTable.getDataSchema()));
         }
     }
 
@@ -152,14 +170,30 @@ public class PinotSegmentPageSource
         }
         currentDataTable = dataTableList.pop();
 
+        // This is the list of handles we came up with when generating the PQL
+        // This could be a superset/permutation of the handles being requested in this scan
+        List<PinotColumnHandle> expectedColumnHandles = split.getExpectedColumnHandles();
         PageBuilder pageBuilder = new PageBuilder(columnTypes);
         // Note that declared positions in the Page should be the same with number of rows in each Block
         pageBuilder.declarePositions(currentDataTable.getDataTable().getNumberOfRows());
-        for (int columnHandleIdx = 0; columnHandleIdx < columnHandles.size(); columnHandleIdx++) {
-            BlockBuilder blockBuilder = pageBuilder.getBlockBuilder(columnHandleIdx);
-            Type columnType = columnTypes.get(columnHandleIdx);
+        for (int columnHandleIndex = 0; columnHandleIndex < columnHandles.size(); columnHandleIndex++) {
+            BlockBuilder blockBuilder = pageBuilder.getBlockBuilder(columnHandleIndex);
+            Type columnType = columnTypes.get(columnHandleIndex);
             // Write a block for each column in the original order.
-            writeBlock(blockBuilder, columnType, columnHandleIdx);
+            PinotColumnHandle handle = columnHandles.get(columnHandleIndex);
+
+            // map the handle needed by the scan to its index corresponding to the generated PQL
+            // All handles requested by the scan should be a subset of the expected handles
+            // ie., the expected column handles (corresponding to the generated PQL) can contain
+            // extra columns that we drop.
+            int indexReturnedByPinot = expectedColumnHandles.indexOf(handle);
+            if (indexReturnedByPinot < 0) {
+                throw new PinotException(
+                        PINOT_INVALID_PQL_GENERATED,
+                        split.getSegmentPql(),
+                        String.format("Expected column handle %s to be present in the handles %s corresponding to the segment PQL", handle, expectedColumnHandles));
+            }
+            writeBlock(blockBuilder, columnType, indexReturnedByPinot);
         }
 
         return pageBuilder.build();
@@ -178,7 +212,7 @@ public class PinotSegmentPageSource
                     .filter(table -> table != null && table.getNumberOfRows() > 0)
                     .forEach(dataTable ->
                     {
-                        checkExceptions(dataTable, split);
+                        checkExceptions(dataTable, split, PinotSessionProperties.isMarkDataFetchExceptionsAsRetriable(session));
                         // Store each dataTable which will later be constructed into Pages.
                         // Also update estimatedMemoryUsage, mostly represented by the size of all dataTables, using numberOfRows and fieldTypes combined as an estimate
                         int estimatedTableSizeInBytes = IntStream.rangeClosed(0, dataTable.getDataSchema().size() - 1)
@@ -188,10 +222,6 @@ public class PinotSegmentPageSource
                         estimatedMemoryUsageInBytes += estimatedTableSizeInBytes;
                     });
 
-            this.columnTypes = columnHandles
-                    .stream()
-                    .map(columnHandle -> getTypeForBlock(columnHandle))
-                    .collect(Collectors.toList());
             isPinotDataFetched = true;
         }
         finally {
@@ -201,8 +231,8 @@ public class PinotSegmentPageSource
 
     private Map<ServerInstance, DataTable> queryPinot(ConnectorSession session, PinotSplit split)
     {
-        String pql = split.getSegmentPql().orElseThrow(() -> new PinotException(PinotErrorCode.PINOT_INVALID_PQL_GENERATED, Optional.empty(), "Expected the segment split to contain the pql"));
-        String host = split.getSegmentHost().orElseThrow(() -> new PinotException(PinotErrorCode.PINOT_INVALID_PQL_GENERATED, Optional.empty(), "Expected the segment split to contain the host"));
+        String pql = split.getSegmentPql().orElseThrow(() -> new PinotException(PINOT_INVALID_PQL_GENERATED, Optional.empty(), "Expected the segment split to contain the pql"));
+        String host = split.getSegmentHost().orElseThrow(() -> new PinotException(PINOT_INVALID_PQL_GENERATED, Optional.empty(), "Expected the segment split to contain the host"));
         try {
             return ImmutableMap.copyOf(
                     pinotQueryClient.queryPinotServerForDataTable(
@@ -214,7 +244,7 @@ public class PinotSegmentPageSource
                             PinotSessionProperties.getPinotRetryCount(session)));
         }
         catch (PinotScatterGatherQueryClient.PinotException pe) {
-            throw new PinotException(PINOT_ERROR_CODE_MAP.getOrDefault(pe.getErrorCode(), PinotErrorCode.PINOT_UNCLASSIFIED_ERROR), Optional.of(pql), String.format("Error when hitting host %s", host), pe);
+            throw new PinotException(PINOT_ERROR_CODE_MAP.getOrDefault(pe.getErrorCode(), PINOT_UNCLASSIFIED_ERROR), Optional.of(pql), String.format("Error when hitting host %s", host), pe);
         }
     }
 
@@ -228,38 +258,40 @@ public class PinotSegmentPageSource
     }
 
     /**
-     * Generates the {@link com.facebook.presto.spi.block.Block} for the specific column from the {@link #currentDataTable}.
+     * Generates the {@link com.facebook.presto.common.block.Block} for the specific column from the {@link #currentDataTable}.
      *
-     * <p>Based on the original Pinot column types, write as Presto-supported values to {@link com.facebook.presto.spi.block.BlockBuilder}, e.g.
+     * <p>Based on the original Pinot column types, write as Presto-supported values to {@link com.facebook.presto.common.block.BlockBuilder}, e.g.
      * FLOAT -> Double, INT -> Long, String -> Slice.
      *
      * @param blockBuilder blockBuilder for the current column
      * @param columnType type of the column
-     * @param columnIdx column index
+     * @param columnIndex column index
      */
 
-    private void writeBlock(BlockBuilder blockBuilder, Type columnType, int columnIdx)
+    private void writeBlock(BlockBuilder blockBuilder, Type columnType, int columnIndex)
     {
         Class<?> javaType = columnType.getJavaType();
-        DataSchema.ColumnDataType pinotColumnType = currentDataTable.getDataTable().getDataSchema().getColumnDataType(columnIdx);
+        ColumnDataType pinotColumnType = currentDataTable.getDataTable().getDataSchema().getColumnDataType(columnIndex);
         if (javaType.equals(boolean.class)) {
-            writeBooleanBlock(blockBuilder, columnType, columnIdx);
+            writeBooleanBlock(blockBuilder, columnType, columnIndex);
         }
         else if (javaType.equals(long.class)) {
-            writeLongBlock(blockBuilder, columnType, columnIdx);
+            writeLongBlock(blockBuilder, columnType, columnIndex);
         }
         else if (javaType.equals(double.class)) {
-            writeDoubleBlock(blockBuilder, columnType, columnIdx);
+            writeDoubleBlock(blockBuilder, columnType, columnIndex);
         }
         else if (javaType.equals(Slice.class)) {
-            writeSliceBlock(blockBuilder, columnType, columnIdx);
+            writeSliceBlock(blockBuilder, columnType, columnIndex);
         }
         else {
             throw new PrestoException(
                     PINOT_UNSUPPORTED_COLUMN_TYPE,
                     String.format(
                             "Failed to write column %s. pinotColumnType %s, javaType %s",
-                            columnHandles.get(columnIdx).getColumnName(), pinotColumnType, javaType));
+                            split.getExpectedColumnHandles().get(columnIndex).getColumnName(),
+                            pinotColumnType,
+                            javaType));
         }
     }
 
@@ -296,27 +328,21 @@ public class PinotSegmentPageSource
         }
     }
 
-    Type getType(int columnIndex)
+    private boolean getBoolean(int rowIndex, int columnIndex)
     {
-        checkArgument(columnIndex < columnHandles.size(), "Invalid field index");
-        return columnHandles.get(columnIndex).getDataType();
+        return Boolean.getBoolean(currentDataTable.getDataTable().getString(rowIndex, columnIndex));
     }
 
-    boolean getBoolean(int rowIdx, int columnIndex)
+    private long getLong(int rowIndex, int columnIndex)
     {
-        return Boolean.getBoolean(currentDataTable.getDataTable().getString(rowIdx, columnIndex));
-    }
-
-    long getLong(int rowIndex, int columnIndex)
-    {
-        DataSchema.ColumnDataType dataType = currentDataTable.getDataTable().getDataSchema().getColumnDataType(columnIndex);
+        ColumnDataType dataType = currentDataTable.getDataTable().getDataSchema().getColumnDataType(columnIndex);
         // Note columnType in the dataTable could be different from the original columnType in the columnHandle.
         // e.g. when original column type is int/long and aggregation value is requested, the returned dataType from Pinot would be double.
         // So need to cast it back to the original columnType.
-        if (dataType.equals(DataType.DOUBLE)) {
+        if (dataType.equals(ColumnDataType.DOUBLE)) {
             return (long) currentDataTable.getDataTable().getDouble(rowIndex, columnIndex);
         }
-        if (dataType.equals(DataType.INT)) {
+        if (dataType.equals(ColumnDataType.INT)) {
             return (long) currentDataTable.getDataTable().getInt(rowIndex, columnIndex);
         }
         else {
@@ -324,10 +350,10 @@ public class PinotSegmentPageSource
         }
     }
 
-    double getDouble(int rowIndex, int columnIndex)
+    private double getDouble(int rowIndex, int columnIndex)
     {
-        DataSchema.ColumnDataType dataType = currentDataTable.getDataTable().getDataSchema().getColumnDataType(columnIndex);
-        if (dataType.equals(DataType.FLOAT)) {
+        ColumnDataType dataType = currentDataTable.getDataTable().getDataSchema().getColumnDataType(columnIndex);
+        if (dataType.equals(ColumnDataType.FLOAT)) {
             return currentDataTable.getDataTable().getFloat(rowIndex, columnIndex);
         }
         else {
@@ -335,10 +361,10 @@ public class PinotSegmentPageSource
         }
     }
 
-    Slice getSlice(int rowIndex, int columnIndex)
+    private Slice getSlice(int rowIndex, int columnIndex)
     {
         checkColumnType(columnIndex, VARCHAR);
-        DataSchema.ColumnDataType columnType = currentDataTable.getDataTable().getDataSchema().getColumnDataType(columnIndex);
+        ColumnDataType columnType = currentDataTable.getDataTable().getDataSchema().getColumnDataType(columnIndex);
         switch (columnType) {
             case INT_ARRAY:
                 int[] intArray = currentDataTable.getDataTable().getIntArray(rowIndex, columnIndex);
@@ -372,7 +398,7 @@ public class PinotSegmentPageSource
      * @param dataType FieldSpec.dataType for Pinot column.
      * @return estimated size in bytes.
      */
-    private int getEstimatedColumnSizeInBytes(DataSchema.ColumnDataType dataType)
+    private int getEstimatedColumnSizeInBytes(ColumnDataType dataType)
     {
         if (dataType.isNumber()) {
             switch (dataType) {
@@ -390,13 +416,14 @@ public class PinotSegmentPageSource
         return pinotConfig.getEstimatedSizeInBytesForNonNumericColumn();
     }
 
-    void checkColumnType(int columnIndex, Type expected)
+    private void checkColumnType(int columnIndex, Type expected)
     {
-        Type actual = getType(columnIndex);
+        checkArgument(columnIndex < split.getExpectedColumnHandles().size(), "Invalid field index");
+        Type actual = split.getExpectedColumnHandles().get(columnIndex).getDataType();
         checkArgument(actual.equals(expected), "Expected column %s to be type %s but is %s", columnIndex, expected, actual);
     }
 
-    Type getTypeForBlock(PinotColumnHandle pinotColumnHandle)
+    private static Type getTypeForBlock(PinotColumnHandle pinotColumnHandle)
     {
         if (pinotColumnHandle.getDataType().equals(INTEGER)) {
             return BIGINT;

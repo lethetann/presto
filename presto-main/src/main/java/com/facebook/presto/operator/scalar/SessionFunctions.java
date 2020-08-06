@@ -13,24 +13,25 @@
  */
 package com.facebook.presto.operator.scalar;
 
-import com.facebook.presto.spi.ConnectorSession;
+import com.facebook.presto.common.function.SqlFunctionProperties;
+import com.facebook.presto.common.type.StandardTypes;
 import com.facebook.presto.spi.function.Description;
 import com.facebook.presto.spi.function.ScalarFunction;
 import com.facebook.presto.spi.function.SqlType;
-import com.facebook.presto.spi.type.StandardTypes;
 import io.airlift.slice.Slice;
 
+import static com.facebook.presto.spi.function.SqlFunctionVisibility.HIDDEN;
 import static io.airlift.slice.Slices.utf8Slice;
 
 public final class SessionFunctions
 {
     private SessionFunctions() {}
 
-    @ScalarFunction(value = "$current_user", hidden = true)
+    @ScalarFunction(value = "$current_user", visibility = HIDDEN)
     @Description("current user")
     @SqlType(StandardTypes.VARCHAR)
-    public static Slice currentUser(ConnectorSession session)
+    public static Slice currentUser(SqlFunctionProperties properties)
     {
-        return utf8Slice(session.getUser());
+        return utf8Slice(properties.getSessionUser());
     }
 }

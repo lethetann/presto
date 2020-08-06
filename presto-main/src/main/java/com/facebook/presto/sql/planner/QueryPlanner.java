@@ -14,10 +14,12 @@
 package com.facebook.presto.sql.planner;
 
 import com.facebook.presto.Session;
+import com.facebook.presto.common.block.SortOrder;
+import com.facebook.presto.common.predicate.TupleDomain;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.TableHandle;
-import com.facebook.presto.spi.block.SortOrder;
 import com.facebook.presto.spi.plan.AggregationNode;
 import com.facebook.presto.spi.plan.AggregationNode.Aggregation;
 import com.facebook.presto.spi.plan.Assignments;
@@ -30,11 +32,9 @@ import com.facebook.presto.spi.plan.PlanNodeIdAllocator;
 import com.facebook.presto.spi.plan.ProjectNode;
 import com.facebook.presto.spi.plan.TableScanNode;
 import com.facebook.presto.spi.plan.ValuesNode;
-import com.facebook.presto.spi.predicate.TupleDomain;
 import com.facebook.presto.spi.relation.CallExpression;
 import com.facebook.presto.spi.relation.RowExpression;
 import com.facebook.presto.spi.relation.VariableReferenceExpression;
-import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.sql.analyzer.Analysis;
 import com.facebook.presto.sql.analyzer.Field;
 import com.facebook.presto.sql.analyzer.FieldId;
@@ -79,11 +79,12 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.stream.IntStream;
 
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.VarbinaryType.VARBINARY;
 import static com.facebook.presto.spi.plan.AggregationNode.groupingSets;
 import static com.facebook.presto.spi.plan.AggregationNode.singleGroupingSet;
 import static com.facebook.presto.spi.plan.LimitNode.Step.FINAL;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.VarbinaryType.VARBINARY;
+import static com.facebook.presto.spi.plan.ProjectNode.Locality.LOCAL;
 import static com.facebook.presto.sql.NodeUtils.getSortItemsFromOrderBy;
 import static com.facebook.presto.sql.planner.PlannerUtils.toOrderingScheme;
 import static com.facebook.presto.sql.planner.PlannerUtils.toSortOrder;
@@ -95,7 +96,6 @@ import static com.facebook.presto.sql.relational.OriginalExpressionUtils.asSymbo
 import static com.facebook.presto.sql.relational.OriginalExpressionUtils.castToRowExpression;
 import static com.google.common.base.MoreObjects.firstNonNull;
 import static com.google.common.collect.ImmutableList.toImmutableList;
-import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.collect.Streams.stream;
 import static java.util.Objects.requireNonNull;
@@ -281,10 +281,12 @@ class QueryPlanner
 
     private PlanBuilder planBuilderFor(PlanBuilder builder, Scope scope, Iterable<? extends Expression> expressionsToRemap)
     {
-        Map<Expression, VariableReferenceExpression> expressionsToVariables = variablesForExpressions(builder, expressionsToRemap);
         PlanBuilder newBuilder = planBuilderFor(builder, scope);
-        expressionsToVariables.entrySet()
-                .forEach(entry -> newBuilder.getTranslations().put(entry.getKey(), entry.getValue()));
+        // We can't deduplicate expressions here because even if two expressions are equal,
+        // the TranslationMap maps sql names to symbols, and any lambda expressions will be
+        // resolved differently since the lambdaDeclarationToVariableMap is identity based.
+        stream(expressionsToRemap)
+                .forEach(expression -> newBuilder.getTranslations().put(expression, builder.translate(expression)));
         return newBuilder;
     }
 
@@ -405,7 +407,8 @@ class QueryPlanner
         return new PlanBuilder(translations, new ProjectNode(
                 idAllocator.getNextId(),
                 subPlan.getRoot(),
-                projections.build()),
+                projections.build(),
+                LOCAL),
                 analysis.getParameters());
     }
 
@@ -421,7 +424,8 @@ class QueryPlanner
         return new PlanBuilder(translations, new ProjectNode(
                 idAllocator.getNextId(),
                 subPlan.getRoot(),
-                assignments),
+                assignments,
+                LOCAL),
                 analysis.getParameters());
     }
 
@@ -540,7 +544,7 @@ class QueryPlanner
             aggregationArguments.stream().map(AssignmentUtils::identityAsSymbolReference).forEach(assignments::put);
             groupingSetMappings.forEach((key, value) -> assignments.put(key, castToRowExpression(asSymbolReference(value))));
 
-            ProjectNode project = new ProjectNode(idAllocator.getNextId(), subPlan.getRoot(), assignments.build());
+            ProjectNode project = new ProjectNode(idAllocator.getNextId(), subPlan.getRoot(), assignments.build(), LOCAL);
             subPlan = new PlanBuilder(groupingTranslations, project, analysis.getParameters());
         }
 
@@ -700,7 +704,7 @@ class QueryPlanner
             newTranslations.put(groupingOperation, variable);
         }
 
-        return new PlanBuilder(newTranslations, new ProjectNode(idAllocator.getNextId(), subPlan.getRoot(), projections.build()), analysis.getParameters());
+        return new PlanBuilder(newTranslations, new ProjectNode(idAllocator.getNextId(), subPlan.getRoot(), projections.build(), LOCAL), analysis.getParameters());
     }
 
     private PlanBuilder window(PlanBuilder subPlan, OrderBy node)
@@ -937,12 +941,5 @@ class QueryPlanner
         return variables.stream()
                 .map(variable -> new SymbolReference(variable.getName()))
                 .collect(toImmutableList());
-    }
-
-    private static Map<Expression, VariableReferenceExpression> variablesForExpressions(PlanBuilder builder, Iterable<? extends Expression> expressions)
-    {
-        return stream(expressions)
-                .distinct()
-                .collect(toImmutableMap(expression -> expression, builder::translate));
     }
 }

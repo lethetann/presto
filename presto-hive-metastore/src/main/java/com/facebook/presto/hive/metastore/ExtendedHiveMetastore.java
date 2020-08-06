@@ -13,11 +13,12 @@
  */
 package com.facebook.presto.hive.metastore;
 
+import com.facebook.presto.common.predicate.Domain;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.hive.HiveType;
 import com.facebook.presto.spi.security.PrestoPrincipal;
 import com.facebook.presto.spi.security.RoleGrant;
 import com.facebook.presto.spi.statistics.ColumnStatisticType;
-import com.facebook.presto.spi.type.Type;
 
 import java.util.List;
 import java.util.Map;
@@ -76,7 +77,10 @@ public interface ExtendedHiveMetastore
 
     Optional<List<String>> getPartitionNames(String databaseName, String tableName);
 
-    Optional<List<String>> getPartitionNamesByParts(String databaseName, String tableName, List<String> parts);
+    List<String> getPartitionNamesByFilter(
+            String databaseName,
+            String tableName,
+            Map<Column, Domain> partitionPredicates);
 
     Map<String, Optional<Partition>> getPartitionsByNames(String databaseName, String tableName, List<String> partitionNames);
 

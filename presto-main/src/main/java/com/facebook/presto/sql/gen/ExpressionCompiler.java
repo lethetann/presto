@@ -15,13 +15,13 @@ package com.facebook.presto.sql.gen;
 
 import com.facebook.presto.bytecode.ClassDefinition;
 import com.facebook.presto.bytecode.CompilationException;
+import com.facebook.presto.common.function.SqlFunctionProperties;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.operator.project.CursorProcessor;
 import com.facebook.presto.operator.project.PageFilter;
 import com.facebook.presto.operator.project.PageProcessor;
-import com.facebook.presto.operator.project.PageProjection;
+import com.facebook.presto.operator.project.PageProjectionWithOutputs;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.function.SqlFunctionProperties;
 import com.facebook.presto.spi.relation.RowExpression;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.cache.CacheBuilder;
@@ -43,8 +43,8 @@ import static com.facebook.presto.bytecode.Access.FINAL;
 import static com.facebook.presto.bytecode.Access.PUBLIC;
 import static com.facebook.presto.bytecode.Access.a;
 import static com.facebook.presto.bytecode.ParameterizedType.type;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
 import static com.facebook.presto.spi.StandardErrorCode.COMPILER_ERROR;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
 import static com.facebook.presto.sql.gen.BytecodeUtils.invoke;
 import static com.facebook.presto.sql.relational.Expressions.constant;
 import static com.facebook.presto.util.CompilerUtils.defineClass;
@@ -67,7 +67,8 @@ public class ExpressionCompiler
         this.cursorProcessors = CacheBuilder.newBuilder()
                 .recordStats()
                 .maximumSize(1000)
-                .build(CacheLoader.from(key -> compile(key.getSqlFunctionProperties(), key.getFilter(), key.getProjections(), new CursorProcessorCompiler(metadata), CursorProcessor.class)));
+                .build(CacheLoader.from(key -> compile(key.getSqlFunctionProperties(), key.getFilter(), key.getProjections(), new CursorProcessorCompiler(metadata, key.isOptimizeCommonSubExpression()), CursorProcessor.class)));
+
         this.cacheStatsMBean = new CacheStatsMBean(cursorProcessors);
     }
 
@@ -77,10 +78,14 @@ public class ExpressionCompiler
     {
         return cacheStatsMBean;
     }
-
     public Supplier<CursorProcessor> compileCursorProcessor(SqlFunctionProperties sqlFunctionProperties, Optional<RowExpression> filter, List<? extends RowExpression> projections, Object uniqueKey)
     {
-        Class<? extends CursorProcessor> cursorProcessor = cursorProcessors.getUnchecked(new CacheKey(sqlFunctionProperties, filter, projections, uniqueKey));
+        return compileCursorProcessor(sqlFunctionProperties, filter, projections, uniqueKey, true);
+    }
+
+    public Supplier<CursorProcessor> compileCursorProcessor(SqlFunctionProperties sqlFunctionProperties, Optional<RowExpression> filter, List<? extends RowExpression> projections, Object uniqueKey, boolean isOptimizeCommonSubExpression)
+    {
+        Class<? extends CursorProcessor> cursorProcessor = cursorProcessors.getUnchecked(new CacheKey(sqlFunctionProperties, filter, projections, uniqueKey, isOptimizeCommonSubExpression));
         return () -> {
             try {
                 return cursorProcessor.getConstructor().newInstance();
@@ -91,41 +96,41 @@ public class ExpressionCompiler
         };
     }
 
-    public Supplier<PageProcessor> compilePageProcessor(SqlFunctionProperties sqlFunctionProperties, Optional<RowExpression> filter, List<? extends RowExpression> projections, Optional<String> classNameSuffix)
+    public Supplier<PageProcessor> compilePageProcessor(SqlFunctionProperties sqlFunctionProperties, Optional<RowExpression> filter, List<? extends RowExpression> projections, boolean isOptimizeCommonSubExpression, Optional<String> classNameSuffix)
     {
-        return compilePageProcessor(sqlFunctionProperties, filter, projections, classNameSuffix, OptionalInt.empty());
+        return compilePageProcessor(sqlFunctionProperties, filter, projections, isOptimizeCommonSubExpression, classNameSuffix, OptionalInt.empty());
     }
 
     private Supplier<PageProcessor> compilePageProcessor(
             SqlFunctionProperties sqlFunctionProperties,
             Optional<RowExpression> filter,
             List<? extends RowExpression> projections,
+            boolean isOptimizeCommonSubExpression,
             Optional<String> classNameSuffix,
             OptionalInt initialBatchSize)
     {
-        Optional<Supplier<PageFilter>> filterFunctionSupplier = filter.map(expression -> pageFunctionCompiler.compileFilter(sqlFunctionProperties, expression, classNameSuffix));
-        List<Supplier<PageProjection>> pageProjectionSuppliers = projections.stream()
-                .map(projection -> pageFunctionCompiler.compileProjection(sqlFunctionProperties, projection, classNameSuffix))
-                .collect(toImmutableList());
+        Optional<Supplier<PageFilter>> filterFunctionSupplier = filter.map(expression -> pageFunctionCompiler.compileFilter(sqlFunctionProperties, expression, isOptimizeCommonSubExpression, classNameSuffix));
+        List<Supplier<PageProjectionWithOutputs>> pageProjectionSuppliers = pageFunctionCompiler.compileProjections(sqlFunctionProperties, projections, isOptimizeCommonSubExpression, classNameSuffix);
 
         return () -> {
             Optional<PageFilter> filterFunction = filterFunctionSupplier.map(Supplier::get);
-            List<PageProjection> pageProjections = pageProjectionSuppliers.stream()
+            List<PageProjectionWithOutputs> pageProjections = pageProjectionSuppliers.stream()
                     .map(Supplier::get)
                     .collect(toImmutableList());
             return new PageProcessor(filterFunction, pageProjections, initialBatchSize);
         };
     }
 
+    @VisibleForTesting
     public Supplier<PageProcessor> compilePageProcessor(SqlFunctionProperties sqlFunctionProperties, Optional<RowExpression> filter, List<? extends RowExpression> projections)
     {
-        return compilePageProcessor(sqlFunctionProperties, filter, projections, Optional.empty());
+        return compilePageProcessor(sqlFunctionProperties, filter, projections, true, Optional.empty());
     }
 
     @VisibleForTesting
-    public Supplier<PageProcessor> compilePageProcessor(SqlFunctionProperties sqlFunctionProperties, Optional<RowExpression> filter, List<? extends RowExpression> projections, int initialBatchSize)
+    public Supplier<PageProcessor> compilePageProcessor(SqlFunctionProperties sqlFunctionProperties, Optional<RowExpression> filter, List<? extends RowExpression> projections, boolean isOptimizeCommonSubExpression, int initialBatchSize)
     {
-        return compilePageProcessor(sqlFunctionProperties, filter, projections, Optional.empty(), OptionalInt.of(initialBatchSize));
+        return compilePageProcessor(sqlFunctionProperties, filter, projections, isOptimizeCommonSubExpression, Optional.empty(), OptionalInt.of(initialBatchSize));
     }
 
     private <T> Class<? extends T> compile(SqlFunctionProperties sqlFunctionProperties, Optional<RowExpression> filter, List<RowExpression> projections, BodyCompiler bodyCompiler, Class<? extends T> superType)
@@ -184,13 +189,15 @@ public class ExpressionCompiler
         private final Optional<RowExpression> filter;
         private final List<RowExpression> projections;
         private final Object uniqueKey;
+        private final boolean isOptimizeCommonSubExpression;
 
-        private CacheKey(SqlFunctionProperties sqlFunctionProperties, Optional<RowExpression> filter, List<? extends RowExpression> projections, Object uniqueKey)
+        private CacheKey(SqlFunctionProperties sqlFunctionProperties, Optional<RowExpression> filter, List<? extends RowExpression> projections, Object uniqueKey, boolean isOptimizeCommonSubExpression)
         {
             this.sqlFunctionProperties = sqlFunctionProperties;
             this.filter = filter;
             this.uniqueKey = uniqueKey;
             this.projections = ImmutableList.copyOf(projections);
+            this.isOptimizeCommonSubExpression = isOptimizeCommonSubExpression;
         }
 
         public SqlFunctionProperties getSqlFunctionProperties()
@@ -206,6 +213,11 @@ public class ExpressionCompiler
         private List<RowExpression> getProjections()
         {
             return projections;
+        }
+
+        private boolean isOptimizeCommonSubExpression()
+        {
+            return isOptimizeCommonSubExpression;
         }
 
         @Override
@@ -227,7 +239,8 @@ public class ExpressionCompiler
             return Objects.equals(this.sqlFunctionProperties, other.sqlFunctionProperties) &&
                     Objects.equals(this.filter, other.filter) &&
                     Objects.equals(this.projections, other.projections) &&
-                    Objects.equals(this.uniqueKey, other.uniqueKey);
+                    Objects.equals(this.uniqueKey, other.uniqueKey) &&
+                    Objects.equals(this.isOptimizeCommonSubExpression, other.isOptimizeCommonSubExpression);
         }
 
         @Override
@@ -238,6 +251,7 @@ public class ExpressionCompiler
                     .add("filter", filter)
                     .add("projections", projections)
                     .add("uniqueKey", uniqueKey)
+                    .add("isOptimizeCommonSubExpression", isOptimizeCommonSubExpression)
                     .toString();
         }
     }

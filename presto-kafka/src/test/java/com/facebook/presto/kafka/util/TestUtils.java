@@ -23,6 +23,7 @@ import com.facebook.presto.tests.TestingPrestoClient;
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.io.ByteStreams;
+import org.apache.kafka.clients.producer.KafkaProducer;
 
 import java.io.IOException;
 import java.net.ServerSocket;
@@ -31,7 +32,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Properties;
 
-import static com.facebook.presto.kafka.util.EmbeddedKafka.CloseableProducer;
 import static java.lang.String.format;
 
 public final class TestUtils
@@ -65,13 +65,14 @@ public final class TestUtils
                 "kafka.nodes", embeddedKafka.getConnectString(),
                 "kafka.table-names", Joiner.on(",").join(topicDescriptions.keySet()),
                 "kafka.connect-timeout", "120s",
-                "kafka.default-schema", "default");
+                "kafka.default-schema", "default",
+                "kafka.table-description-dir", "write-test");
         queryRunner.createCatalog("kafka", "kafka", kafkaConfig);
     }
 
     public static void loadTpchTopic(EmbeddedKafka embeddedKafka, TestingPrestoClient prestoClient, String topicName, QualifiedObjectName tpchTableName)
     {
-        try (CloseableProducer<Long, Object> producer = embeddedKafka.createProducer();
+        try (KafkaProducer<Long, Object> producer = embeddedKafka.createProducer();
                 KafkaLoader tpchLoader = new KafkaLoader(producer, topicName, prestoClient.getServer(), prestoClient.getDefaultSession())) {
             tpchLoader.execute(format("SELECT * from %s", tpchTableName));
         }

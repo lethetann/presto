@@ -14,7 +14,12 @@
 package com.facebook.presto.metadata;
 
 import com.facebook.presto.Session;
-import com.facebook.presto.spi.CatalogSchemaName;
+import com.facebook.presto.common.CatalogSchemaName;
+import com.facebook.presto.common.block.BlockEncodingSerde;
+import com.facebook.presto.common.predicate.TupleDomain;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeManager;
+import com.facebook.presto.common.type.TypeSignature;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ColumnMetadata;
 import com.facebook.presto.spi.ConnectorId;
@@ -22,12 +27,9 @@ import com.facebook.presto.spi.ConnectorTableMetadata;
 import com.facebook.presto.spi.Constraint;
 import com.facebook.presto.spi.SystemTable;
 import com.facebook.presto.spi.TableHandle;
-import com.facebook.presto.spi.block.BlockEncodingSerde;
 import com.facebook.presto.spi.connector.ConnectorCapabilities;
 import com.facebook.presto.spi.connector.ConnectorOutputMetadata;
 import com.facebook.presto.spi.function.SqlFunction;
-import com.facebook.presto.spi.predicate.TupleDomain;
-import com.facebook.presto.spi.relation.RowExpression;
 import com.facebook.presto.spi.security.GrantInfo;
 import com.facebook.presto.spi.security.PrestoPrincipal;
 import com.facebook.presto.spi.security.Privilege;
@@ -35,9 +37,6 @@ import com.facebook.presto.spi.security.RoleGrant;
 import com.facebook.presto.spi.statistics.ComputedStatistics;
 import com.facebook.presto.spi.statistics.TableStatistics;
 import com.facebook.presto.spi.statistics.TableStatisticsMetadata;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeManager;
-import com.facebook.presto.spi.type.TypeSignature;
 import com.facebook.presto.sql.planner.PartitioningHandle;
 import com.google.common.util.concurrent.ListenableFuture;
 import io.airlift.slice.Slice;
@@ -70,13 +69,13 @@ public abstract class AbstractMockMetadata
     }
 
     @Override
-    public List<SqlFunction> listFunctions()
+    public List<SqlFunction> listFunctions(Session session)
     {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public void registerBuiltInFunctions(List<? extends BuiltInFunction> functions)
+    public void registerBuiltInFunctions(List<? extends SqlFunction> functions)
     {
         throw new UnsupportedOperationException();
     }
@@ -130,15 +129,9 @@ public abstract class AbstractMockMetadata
     }
 
     @Override
-    public boolean isPushdownFilterSupported(Session session, TableHandle tableHandle)
+    public boolean isLegacyGetLayoutSupported(Session session, TableHandle tableHandle)
     {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public PushdownFilterResult pushdownFilter(Session session, TableHandle tableHandle, RowExpression filter)
-    {
-        throw new UnsupportedOperationException();
+        return true;
     }
 
     @Override
@@ -191,6 +184,12 @@ public abstract class AbstractMockMetadata
 
     @Override
     public ColumnMetadata getColumnMetadata(Session session, TableHandle tableHandle, ColumnHandle columnHandle)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public TupleDomain<ColumnHandle> toExplainIOConstraints(Session session, TableHandle tableHandle, TupleDomain<ColumnHandle> constraints)
     {
         throw new UnsupportedOperationException();
     }
@@ -262,6 +261,12 @@ public abstract class AbstractMockMetadata
     }
 
     @Override
+    public Optional<NewTableLayout> getPreferredShuffleLayoutForNewTable(Session session, String catalogName, ConnectorTableMetadata tableMetadata)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
     public OutputTableHandle beginCreateTable(Session session, String catalogName, ConnectorTableMetadata tableMetadata, Optional<NewTableLayout> layout)
     {
         throw new UnsupportedOperationException();
@@ -275,6 +280,12 @@ public abstract class AbstractMockMetadata
 
     @Override
     public Optional<NewTableLayout> getInsertLayout(Session session, TableHandle target)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Optional<NewTableLayout> getPreferredShuffleLayoutForInsert(Session session, TableHandle target)
     {
         throw new UnsupportedOperationException();
     }
@@ -388,7 +399,7 @@ public abstract class AbstractMockMetadata
     }
 
     @Override
-    public void createView(Session session, QualifiedObjectName viewName, String viewData, boolean replace)
+    public void createView(Session session, String catalogName, ConnectorTableMetadata viewMetadata, String viewData, boolean replace)
     {
         throw new UnsupportedOperationException();
     }
@@ -472,13 +483,13 @@ public abstract class AbstractMockMetadata
     }
 
     @Override
-    public ListenableFuture<Void> commitPartitionAsync(Session session, OutputTableHandle tableHandle, Collection<Slice> fragments)
+    public ListenableFuture<Void> commitPageSinkAsync(Session session, OutputTableHandle tableHandle, Collection<Slice> fragments)
     {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public ListenableFuture<Void> commitPartitionAsync(Session session, InsertTableHandle tableHandle, Collection<Slice> fragments)
+    public ListenableFuture<Void> commitPageSinkAsync(Session session, InsertTableHandle tableHandle, Collection<Slice> fragments)
     {
         throw new UnsupportedOperationException();
     }

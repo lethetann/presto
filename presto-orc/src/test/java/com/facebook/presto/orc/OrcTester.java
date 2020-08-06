@@ -16,6 +16,28 @@ package com.facebook.presto.orc;
 import com.facebook.hive.orc.OrcConf;
 import com.facebook.hive.orc.lazy.OrcLazyObject;
 import com.facebook.presto.block.BlockEncodingManager;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.Subfield;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.ArrayType;
+import com.facebook.presto.common.type.CharType;
+import com.facebook.presto.common.type.DecimalType;
+import com.facebook.presto.common.type.Decimals;
+import com.facebook.presto.common.type.MapType;
+import com.facebook.presto.common.type.NamedTypeSignature;
+import com.facebook.presto.common.type.RowFieldName;
+import com.facebook.presto.common.type.RowType;
+import com.facebook.presto.common.type.SqlDate;
+import com.facebook.presto.common.type.SqlDecimal;
+import com.facebook.presto.common.type.SqlTimestamp;
+import com.facebook.presto.common.type.SqlVarbinary;
+import com.facebook.presto.common.type.StandardTypes;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeManager;
+import com.facebook.presto.common.type.TypeSignatureParameter;
+import com.facebook.presto.common.type.VarbinaryType;
+import com.facebook.presto.common.type.VarcharType;
 import com.facebook.presto.metadata.FunctionManager;
 import com.facebook.presto.orc.TrackingTupleDomainFilter.TestBigintRange;
 import com.facebook.presto.orc.TrackingTupleDomainFilter.TestDoubleRange;
@@ -24,28 +46,6 @@ import com.facebook.presto.orc.TupleDomainFilter.DoubleRange;
 import com.facebook.presto.orc.cache.OrcFileTailSource;
 import com.facebook.presto.orc.cache.StorageOrcFileTailSource;
 import com.facebook.presto.orc.metadata.CompressionKind;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.Subfield;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.type.ArrayType;
-import com.facebook.presto.spi.type.CharType;
-import com.facebook.presto.spi.type.DecimalType;
-import com.facebook.presto.spi.type.Decimals;
-import com.facebook.presto.spi.type.MapType;
-import com.facebook.presto.spi.type.NamedTypeSignature;
-import com.facebook.presto.spi.type.RowFieldName;
-import com.facebook.presto.spi.type.RowType;
-import com.facebook.presto.spi.type.SqlDate;
-import com.facebook.presto.spi.type.SqlDecimal;
-import com.facebook.presto.spi.type.SqlTimestamp;
-import com.facebook.presto.spi.type.SqlVarbinary;
-import com.facebook.presto.spi.type.StandardTypes;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeManager;
-import com.facebook.presto.spi.type.TypeSignatureParameter;
-import com.facebook.presto.spi.type.VarbinaryType;
-import com.facebook.presto.spi.type.VarcharType;
 import com.facebook.presto.sql.analyzer.FeaturesConfig;
 import com.facebook.presto.type.TypeRegistry;
 import com.google.common.base.Functions;
@@ -123,7 +123,21 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
-import static com.facebook.presto.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.Chars.truncateToLengthAndTrimSpaces;
+import static com.facebook.presto.common.type.DateType.DATE;
+import static com.facebook.presto.common.type.Decimals.rescale;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.RealType.REAL;
+import static com.facebook.presto.common.type.SmallintType.SMALLINT;
+import static com.facebook.presto.common.type.TimestampType.TIMESTAMP;
+import static com.facebook.presto.common.type.TinyintType.TINYINT;
+import static com.facebook.presto.common.type.VarbinaryType.VARBINARY;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
+import static com.facebook.presto.common.type.Varchars.truncateToLength;
+import static com.facebook.presto.orc.NoopOrcAggregatedMemoryContext.NOOP_ORC_AGGREGATED_MEMORY_CONTEXT;
 import static com.facebook.presto.orc.OrcReader.MAX_BATCH_SIZE;
 import static com.facebook.presto.orc.OrcTester.Format.DWRF;
 import static com.facebook.presto.orc.OrcTester.Format.ORC_11;
@@ -137,20 +151,7 @@ import static com.facebook.presto.orc.metadata.CompressionKind.NONE;
 import static com.facebook.presto.orc.metadata.CompressionKind.SNAPPY;
 import static com.facebook.presto.orc.metadata.CompressionKind.ZLIB;
 import static com.facebook.presto.orc.metadata.CompressionKind.ZSTD;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.Chars.truncateToLengthAndTrimSpaces;
-import static com.facebook.presto.spi.type.DateType.DATE;
-import static com.facebook.presto.spi.type.Decimals.rescale;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
-import static com.facebook.presto.spi.type.RealType.REAL;
-import static com.facebook.presto.spi.type.SmallintType.SMALLINT;
-import static com.facebook.presto.spi.type.TimestampType.TIMESTAMP;
-import static com.facebook.presto.spi.type.TinyintType.TINYINT;
-import static com.facebook.presto.spi.type.VarbinaryType.VARBINARY;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
-import static com.facebook.presto.spi.type.Varchars.truncateToLength;
+import static com.facebook.presto.orc.metadata.KeyProvider.UNKNOWN;
 import static com.facebook.presto.testing.DateTimeTestingUtils.sqlTimestampOf;
 import static com.facebook.presto.testing.TestingConnectorSession.SESSION;
 import static com.google.common.base.Preconditions.checkArgument;
@@ -195,6 +196,7 @@ public class OrcTester
     public static final DataSize MAX_BLOCK_SIZE = new DataSize(1, Unit.MEGABYTE);
     public static final DateTimeZone HIVE_STORAGE_TIME_ZONE = DateTimeZone.forID("America/Bahia_Banderas");
 
+    private static final boolean LEGACY_MAP_SUBSCRIPT = true;
     private static final TypeManager TYPE_MANAGER = new TypeRegistry();
     private static final List<Integer> PRIME_NUMBERS = ImmutableList.of(5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97);
 
@@ -267,6 +269,7 @@ public class OrcTester
     private boolean missingStructFieldsTestsEnabled;
     private boolean skipBatchTestsEnabled;
     private boolean skipStripeTestsEnabled;
+    private boolean dwrfEncryptionEnabled;
     private Set<Format> formats = ImmutableSet.of();
     private Set<CompressionKind> compressions = ImmutableSet.of();
     private boolean useSelectiveOrcReader;
@@ -282,6 +285,7 @@ public class OrcTester
         orcTester.skipBatchTestsEnabled = true;
         orcTester.formats = ImmutableSet.of(ORC_12, ORC_11, DWRF);
         orcTester.compressions = ImmutableSet.of(ZLIB);
+        orcTester.dwrfEncryptionEnabled = true;
         return orcTester;
     }
 
@@ -300,6 +304,7 @@ public class OrcTester
         orcTester.skipStripeTestsEnabled = true;
         orcTester.formats = ImmutableSet.copyOf(Format.values());
         orcTester.compressions = ImmutableSet.of(NONE, SNAPPY, ZLIB, LZ4, ZSTD);
+        orcTester.dwrfEncryptionEnabled = true;
         return orcTester;
     }
 
@@ -311,7 +316,7 @@ public class OrcTester
         orcTester.nullTestsEnabled = true;
         orcTester.skipBatchTestsEnabled = true;
         orcTester.formats = ImmutableSet.of(ORC_12, ORC_11, DWRF);
-        orcTester.compressions = ImmutableSet.of(ZLIB);
+        orcTester.compressions = ImmutableSet.of(ZLIB, ZSTD);
         orcTester.useSelectiveOrcReader = true;
 
         return orcTester;
@@ -619,26 +624,83 @@ public class OrcTester
                 if (hiveSupported) {
                     try (TempFile tempFile = new TempFile()) {
                         writeOrcColumnsHive(tempFile.getFile(), format, compression, writeTypes, writeValues);
-                        assertFileContentsPresto(readTypes, tempFile, readValues, false, false, orcEncoding, format, true, useSelectiveOrcReader, settings);
+                        assertFileContentsPresto(readTypes, tempFile, readValues, false, false, orcEncoding, format, true, useSelectiveOrcReader, settings, ImmutableMap.of());
                     }
                 }
 
                 // write Presto, read Hive and Presto
                 try (TempFile tempFile = new TempFile()) {
-                    writeOrcColumnsPresto(tempFile.getFile(), format, compression, writeTypes, writeValues, stats);
+                    writeOrcColumnsPresto(tempFile.getFile(), format, compression, Optional.empty(), writeTypes, writeValues, stats);
 
                     if (verifyWithHiveReader && hiveSupported) {
                         assertFileContentsHive(readTypes, tempFile, format, readValues);
                     }
 
-                    assertFileContentsPresto(readTypes, tempFile, readValues, false, false, orcEncoding, format, false, useSelectiveOrcReader, settings);
+                    assertFileContentsPresto(readTypes, tempFile, readValues, false, false, orcEncoding, format, false, useSelectiveOrcReader, settings, ImmutableMap.of());
 
                     if (skipBatchTestsEnabled) {
-                        assertFileContentsPresto(readTypes, tempFile, readValues, true, false, orcEncoding, format, false, useSelectiveOrcReader, settings);
+                        assertFileContentsPresto(readTypes, tempFile, readValues, true, false, orcEncoding, format, false, useSelectiveOrcReader, settings, ImmutableMap.of());
                     }
 
                     if (skipStripeTestsEnabled) {
-                        assertFileContentsPresto(readTypes, tempFile, readValues, false, true, orcEncoding, format, false, useSelectiveOrcReader, settings);
+                        assertFileContentsPresto(readTypes, tempFile, readValues, false, true, orcEncoding, format, false, useSelectiveOrcReader, settings, ImmutableMap.of());
+                    }
+                }
+                // write presto read presto
+                if (dwrfEncryptionEnabled && format == DWRF) {
+                    try (TempFile tempFile = new TempFile()) {
+                        DwrfWriterEncryption dwrfWriterEncryption = generateWriterEncryption();
+                        writeOrcColumnsPresto(tempFile.getFile(), format, compression, Optional.of(dwrfWriterEncryption), writeTypes, writeValues, stats);
+
+                        ImmutableMap.Builder<Integer, Slice> intermediateKeysBuilder = ImmutableMap.builder();
+                        for (int i = 0; i < dwrfWriterEncryption.getWriterEncryptionGroups().size(); i++) {
+                            for (Integer node : dwrfWriterEncryption.getWriterEncryptionGroups().get(i).getNodes()) {
+                                intermediateKeysBuilder.put(node, dwrfWriterEncryption.getWriterEncryptionGroups().get(i).getIntermediateKeyMetadata());
+                            }
+                        }
+                        Map<Integer, Slice> intermediateKeysMap = intermediateKeysBuilder.build();
+                        assertFileContentsPresto(
+                                readTypes,
+                                tempFile,
+                                readValues,
+                                false,
+                                false,
+                                orcEncoding,
+                                format,
+                                false,
+                                useSelectiveOrcReader,
+                                settings,
+                                intermediateKeysMap);
+
+                        if (skipBatchTestsEnabled) {
+                            assertFileContentsPresto(
+                                    readTypes,
+                                    tempFile,
+                                    readValues,
+                                    true,
+                                    false,
+                                    orcEncoding,
+                                    format,
+                                    false,
+                                    useSelectiveOrcReader,
+                                    settings,
+                                    intermediateKeysMap);
+                        }
+
+                        if (skipStripeTestsEnabled) {
+                            assertFileContentsPresto(
+                                    readTypes,
+                                    tempFile,
+                                    readValues,
+                                    false,
+                                    true,
+                                    orcEncoding,
+                                    format,
+                                    false,
+                                    useSelectiveOrcReader,
+                                    settings,
+                                    intermediateKeysMap);
+                        }
                     }
                 }
             }
@@ -779,7 +841,56 @@ public class OrcTester
             Map<Integer, List<Subfield>> requiredSubfields)
             throws IOException
     {
-        try (OrcSelectiveRecordReader recordReader = createCustomOrcSelectiveRecordReader(file, orcEncoding, orcPredicate, types, MAX_BATCH_SIZE, filters.orElse(ImmutableMap.of()), filterFunctions, filterFunctionInputMapping, requiredSubfields)) {
+        Map<Integer, Type> includedColumns = IntStream.range(0, types.size())
+                .boxed()
+                .collect(toImmutableMap(Function.identity(), types::get));
+        List<Integer> outputColumns = IntStream.range(0, types.size())
+                .boxed()
+                .collect(toImmutableList());
+
+        assertFileContentsPresto(
+                types,
+                file,
+                expectedValues,
+                orcEncoding,
+                orcPredicate,
+                filters,
+                filterFunctions,
+                filterFunctionInputMapping,
+                requiredSubfields,
+                ImmutableMap.of(),
+                includedColumns,
+                outputColumns);
+    }
+
+    public static void assertFileContentsPresto(
+            List<Type> types,
+            File file,
+            List<List<?>> expectedValues,
+            OrcEncoding orcEncoding,
+            OrcPredicate orcPredicate,
+            Optional<Map<Integer, Map<Subfield, TupleDomainFilter>>> filters,
+            List<FilterFunction> filterFunctions,
+            Map<Integer, Integer> filterFunctionInputMapping,
+            Map<Integer, List<Subfield>> requiredSubfields,
+            Map<Integer, Slice> intermediateEncryptionKeys,
+            Map<Integer, Type> includedColumns,
+            List<Integer> outputColumns)
+            throws IOException
+    {
+        try (OrcSelectiveRecordReader recordReader = createCustomOrcSelectiveRecordReader(
+                file,
+                orcEncoding,
+                orcPredicate,
+                types,
+                MAX_BATCH_SIZE,
+                filters.orElse(ImmutableMap.of()),
+                filterFunctions,
+                filterFunctionInputMapping,
+                requiredSubfields,
+                intermediateEncryptionKeys,
+                includedColumns,
+                outputColumns)) {
             assertEquals(recordReader.getReaderPosition(), 0);
             assertEquals(recordReader.getFilePosition(), 0);
 
@@ -797,15 +908,15 @@ public class OrcTester
 
                 assertTrue(expectedValues.get(0).size() >= rowsProcessed + positionCount);
 
-                for (int i = 0; i < types.size(); i++) {
-                    Type type = types.get(i);
+                for (int i = 0; i < outputColumns.size(); i++) {
+                    Type type = types.get(outputColumns.get(i));
                     Block block = page.getBlock(i);
                     assertEquals(block.getPositionCount(), positionCount);
                     checkNullValues(type, block);
 
                     List<Object> data = new ArrayList<>(positionCount);
                     for (int position = 0; position < positionCount; position++) {
-                        data.add(type.getObjectValue(SESSION, block, position));
+                        data.add(type.getObjectValue(SESSION.getSqlFunctionProperties(), block, position));
                     }
 
                     for (int position = 0; position < positionCount; position++) {
@@ -846,12 +957,34 @@ public class OrcTester
             Format format,
             boolean isHiveWriter,
             boolean useSelectiveOrcReader,
-            List<OrcReaderSettings> settings)
+            List<OrcReaderSettings> settings,
+            Map<Integer, Slice> intermediateEncryptionKeys)
             throws IOException
     {
         OrcPredicate orcPredicate = createOrcPredicate(types, expectedValues, format, isHiveWriter);
+
+        Map<Integer, Type> includedColumns = IntStream.range(0, types.size())
+                .boxed()
+                .collect(toImmutableMap(Function.identity(), types::get));
+
+        List<Integer> outputColumns = IntStream.range(0, types.size())
+                .boxed()
+                .collect(toImmutableList());
+
         if (useSelectiveOrcReader) {
-            assertFileContentsPresto(types, tempFile.getFile(), expectedValues, orcEncoding, orcPredicate, Optional.empty(), ImmutableList.of(), ImmutableMap.of(), ImmutableMap.of());
+            assertFileContentsPresto(
+                    types,
+                    tempFile.getFile(),
+                    expectedValues,
+                    orcEncoding,
+                    orcPredicate,
+                    Optional.empty(),
+                    ImmutableList.of(),
+                    ImmutableMap.of(),
+                    ImmutableMap.of(),
+                    intermediateEncryptionKeys,
+                    includedColumns,
+                    outputColumns);
             for (OrcReaderSettings entry : settings) {
                 assertTrue(entry.getFilterFunctions().isEmpty(), "Filter functions are not supported yet");
                 assertTrue(entry.getFilterFunctionInputMapping().isEmpty(), "Filter functions are not supported yet");
@@ -867,7 +1000,16 @@ public class OrcTester
 
                 Optional<Map<Integer, Map<Subfield, TupleDomainFilter>>> transformedFilters = Optional.of(orderChecker.map(checker -> addOrderTracking(columnFilters, checker)).orElse(columnFilters));
 
-                assertFileContentsPresto(types, tempFile.getFile(), prunedAndFilteredRows, orcEncoding, orcPredicate, transformedFilters, entry.getFilterFunctions(), entry.getFilterFunctionInputMapping(), entry.getRequiredSubfields());
+                assertFileContentsPresto(
+                        types,
+                        tempFile.getFile(),
+                        prunedAndFilteredRows,
+                        orcEncoding,
+                        orcPredicate,
+                        transformedFilters,
+                        entry.getFilterFunctions(),
+                        entry.getFilterFunctionInputMapping(),
+                        entry.getRequiredSubfields());
 
                 orderChecker.ifPresent(TupleDomainFilterOrderChecker::assertOrder);
             }
@@ -875,7 +1017,7 @@ public class OrcTester
             return;
         }
 
-        try (OrcBatchRecordReader recordReader = createCustomOrcRecordReader(tempFile, orcEncoding, orcPredicate, types, MAX_BATCH_SIZE, new StorageOrcFileTailSource(), new StorageStripeMetadataSource())) {
+        try (OrcBatchRecordReader recordReader = createCustomOrcRecordReader(tempFile, orcEncoding, orcPredicate, types, MAX_BATCH_SIZE, new StorageOrcFileTailSource(), new StorageStripeMetadataSource(), false, intermediateEncryptionKeys)) {
             assertEquals(recordReader.getReaderPosition(), 0);
             assertEquals(recordReader.getFilePosition(), 0);
 
@@ -898,7 +1040,7 @@ public class OrcTester
 
                         List<Object> data = new ArrayList<>(block.getPositionCount());
                         for (int position = 0; position < block.getPositionCount(); position++) {
-                            data.add(type.getObjectValue(SESSION, block, position));
+                            data.add(type.getObjectValue(SESSION.getSqlFunctionProperties(), block, position));
                         }
 
                         for (int position = 0; position < block.getPositionCount(); position++) {
@@ -1277,10 +1419,16 @@ public class OrcTester
         }
     }
 
-    static OrcBatchRecordReader createCustomOrcRecordReader(TempFile tempFile, OrcEncoding orcEncoding, OrcPredicate predicate, Type type, int initialBatchSize)
+    static OrcBatchRecordReader createCustomOrcRecordReader(TempFile tempFile, OrcEncoding orcEncoding, OrcPredicate predicate, Type type, int initialBatchSize, boolean cacheable)
             throws IOException
     {
-        return createCustomOrcRecordReader(tempFile, orcEncoding, predicate, ImmutableList.of(type), initialBatchSize, new StorageOrcFileTailSource(), new StorageStripeMetadataSource());
+        return createCustomOrcRecordReader(tempFile, orcEncoding, predicate, ImmutableList.of(type), initialBatchSize, cacheable);
+    }
+
+    static OrcBatchRecordReader createCustomOrcRecordReader(TempFile tempFile, OrcEncoding orcEncoding, OrcPredicate predicate, List<Type> types, int initialBatchSize, boolean cacheable)
+            throws IOException
+    {
+        return createCustomOrcRecordReader(tempFile, orcEncoding, predicate, types, initialBatchSize, new StorageOrcFileTailSource(), new StorageStripeMetadataSource(), cacheable, ImmutableMap.of());
     }
 
     static OrcBatchRecordReader createCustomOrcRecordReader(
@@ -1290,7 +1438,9 @@ public class OrcTester
             List<Type> types,
             int initialBatchSize,
             OrcFileTailSource orcFileTailSource,
-            StripeMetadataSource stripeMetadataSource)
+            StripeMetadataSource stripeMetadataSource,
+            boolean cacheable,
+            Map<Integer, Slice> intermediateEncryptionKeys)
             throws IOException
     {
         OrcDataSource orcDataSource = new FileOrcDataSource(tempFile.getFile(), new DataSize(1, MEGABYTE), new DataSize(1, MEGABYTE), new DataSize(1, MEGABYTE), true);
@@ -1299,29 +1449,32 @@ public class OrcTester
                 orcEncoding,
                 orcFileTailSource,
                 stripeMetadataSource,
+                Optional.empty(),
+                NOOP_ORC_AGGREGATED_MEMORY_CONTEXT,
                 new OrcReaderOptions(
                         new DataSize(1, MEGABYTE),
                         new DataSize(1, MEGABYTE),
                         MAX_BLOCK_SIZE,
-                        false));
+                        false),
+                cacheable,
+                new DwrfEncryptionProvider(new UnsupportedEncryptionLibrary(), new TestingEncryptionLibrary()));
 
-        assertEquals(orcReader.getColumnNames(), ImmutableList.of("test"));
         assertEquals(orcReader.getFooter().getRowsInRowGroup(), 10_000);
 
         Map<Integer, Type> columnTypes = IntStream.range(0, types.size())
                 .boxed()
                 .collect(toImmutableMap(Functions.identity(), types::get));
 
-        return orcReader.createBatchRecordReader(columnTypes, predicate, HIVE_STORAGE_TIME_ZONE, newSimpleAggregatedMemoryContext(), initialBatchSize);
+        return orcReader.createBatchRecordReader(columnTypes, predicate, HIVE_STORAGE_TIME_ZONE, new TestingHiveOrcAggregatedMemoryContext(), initialBatchSize, intermediateEncryptionKeys);
     }
 
     public static void writeOrcColumnPresto(File outputFile, Format format, CompressionKind compression, Type type, List<?> values)
             throws Exception
     {
-        writeOrcColumnsPresto(outputFile, format, compression, ImmutableList.of(type), ImmutableList.of(values), new OrcWriterStats());
+        writeOrcColumnsPresto(outputFile, format, compression, Optional.empty(), ImmutableList.of(type), ImmutableList.of(values), new OrcWriterStats());
     }
 
-    private static void writeOrcColumnsPresto(File outputFile, Format format, CompressionKind compression, List<Type> types, List<List<?>> values, OrcWriterStats stats)
+    public static void writeOrcColumnsPresto(File outputFile, Format format, CompressionKind compression, Optional<DwrfWriterEncryption> dwrfWriterEncryption, List<Type> types, List<List<?>> values, OrcWriterStats stats)
             throws Exception
     {
         List<String> columnNames = makeColumnNames(types.size());
@@ -1331,11 +1484,13 @@ public class OrcTester
         metadata.put("columns.types", createSettableStructObjectInspector(types).getTypeName());
 
         OrcWriter writer = new OrcWriter(
-                new OutputStreamOrcDataSink(new FileOutputStream(outputFile)),
+                new OutputStreamDataSink(new FileOutputStream(outputFile)),
                 columnNames,
                 types,
                 format.getOrcEncoding(),
                 compression,
+                dwrfWriterEncryption,
+                new DwrfEncryptionProvider(new UnsupportedEncryptionLibrary(), new TestingEncryptionLibrary()),
                 new OrcWriterOptions(),
                 ImmutableMap.of(),
                 HIVE_STORAGE_TIME_ZONE,
@@ -1355,7 +1510,22 @@ public class OrcTester
 
         writer.write(new Page(blocks));
         writer.close();
-        writer.validate(new FileOrcDataSource(outputFile, new DataSize(1, MEGABYTE), new DataSize(1, MEGABYTE), new DataSize(1, MEGABYTE), true));
+        writer.validate(new FileOrcDataSource(
+                outputFile,
+                new DataSize(1, MEGABYTE),
+                new DataSize(1, MEGABYTE),
+                new DataSize(1, MEGABYTE),
+                true));
+    }
+
+    private static DwrfWriterEncryption generateWriterEncryption()
+    {
+        return new DwrfWriterEncryption(
+                UNKNOWN,
+                ImmutableList.of(
+                        new WriterEncryptionGroup(
+                                ImmutableList.of(1),
+                                Slices.utf8Slice("encryptionKey"))));
     }
 
     private static OrcSelectiveRecordReader createCustomOrcSelectiveRecordReader(
@@ -1367,7 +1537,10 @@ public class OrcTester
             Map<Integer, Map<Subfield, TupleDomainFilter>> filters,
             List<FilterFunction> filterFunctions,
             Map<Integer, Integer> filterFunctionInputMapping,
-            Map<Integer, List<Subfield>> requiredSubfields)
+            Map<Integer, List<Subfield>> requiredSubfields,
+            Map<Integer, Slice> intermediateEncryptionKeys,
+            Map<Integer, Type> includedColumns,
+            List<Integer> outputColumns)
             throws IOException
     {
         OrcDataSource orcDataSource = new FileOrcDataSource(file, new DataSize(1, MEGABYTE), new DataSize(1, MEGABYTE), new DataSize(1, MEGABYTE), true);
@@ -1376,22 +1549,21 @@ public class OrcTester
                 orcEncoding,
                 new StorageOrcFileTailSource(),
                 new StorageStripeMetadataSource(),
+                NOOP_ORC_AGGREGATED_MEMORY_CONTEXT,
                 new OrcReaderOptions(
                         new DataSize(1, MEGABYTE),
                         new DataSize(1, MEGABYTE),
                         MAX_BLOCK_SIZE,
-                        false));
+                        false),
+                false,
+                new DwrfEncryptionProvider(new UnsupportedEncryptionLibrary(), new TestingEncryptionLibrary()));
 
         assertEquals(orcReader.getColumnNames().subList(0, types.size()), makeColumnNames(types.size()));
         assertEquals(orcReader.getFooter().getRowsInRowGroup(), 10_000);
 
-        Map<Integer, Type> columnTypes = IntStream.range(0, types.size())
-                .boxed()
-                .collect(toImmutableMap(Function.identity(), types::get));
-
         return orcReader.createSelectiveRecordReader(
-                columnTypes,
-                IntStream.range(0, types.size()).boxed().collect(toList()),
+                includedColumns,
+                outputColumns,
                 filters,
                 filterFunctions,
                 filterFunctionInputMapping,
@@ -1402,9 +1574,11 @@ public class OrcTester
                 0,
                 orcDataSource.getSize(),
                 HIVE_STORAGE_TIME_ZONE,
-                newSimpleAggregatedMemoryContext(),
+                LEGACY_MAP_SUBSCRIPT,
+                new TestingHiveOrcAggregatedMemoryContext(),
                 Optional.empty(),
-                initialBatchSize);
+                initialBatchSize,
+                intermediateEncryptionKeys);
     }
 
     private static void writeValue(Type type, BlockBuilder blockBuilder, Object value)
@@ -1967,7 +2141,7 @@ public class OrcTester
         return createOrcRecordWriter(outputFile, format, compression, ImmutableList.of(type));
     }
 
-    private static RecordWriter createOrcRecordWriter(File outputFile, Format format, CompressionKind compression, List<Type> types)
+    static RecordWriter createOrcRecordWriter(File outputFile, Format format, CompressionKind compression, List<Type> types)
             throws IOException
     {
         JobConf jobConf = new JobConf();
@@ -2007,7 +2181,7 @@ public class OrcTester
         return getStandardStructObjectInspector(ImmutableList.of(name), ImmutableList.of(getJavaObjectInspector(type)));
     }
 
-    private static SettableStructObjectInspector createSettableStructObjectInspector(List<Type> types)
+    static SettableStructObjectInspector createSettableStructObjectInspector(List<Type> types)
     {
         List<ObjectInspector> columnTypes = types.stream()
                 .map(OrcTester::getJavaObjectInspector)
@@ -2068,7 +2242,7 @@ public class OrcTester
         });
     }
 
-    private static List<Object> toHiveStruct(Object input)
+    public static List<Object> toHiveStruct(Object input)
     {
         return asList(input, input, input);
     }

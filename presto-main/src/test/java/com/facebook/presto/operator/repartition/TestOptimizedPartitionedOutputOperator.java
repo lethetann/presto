@@ -15,14 +15,17 @@ package com.facebook.presto.operator.repartition;
 
 import com.facebook.presto.Session;
 import com.facebook.presto.block.BlockEncodingManager;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.VariableWidthBlock;
+import com.facebook.presto.common.type.ArrayType;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.execution.Lifespan;
 import com.facebook.presto.execution.StateMachine;
 import com.facebook.presto.execution.buffer.BufferState;
 import com.facebook.presto.execution.buffer.OutputBuffers;
-import com.facebook.presto.execution.buffer.PagesSerde;
 import com.facebook.presto.execution.buffer.PagesSerdeFactory;
 import com.facebook.presto.execution.buffer.PartitionedOutputBuffer;
-import com.facebook.presto.execution.buffer.SerializedPage;
 import com.facebook.presto.memory.context.LocalMemoryContext;
 import com.facebook.presto.memory.context.SimpleLocalMemoryContext;
 import com.facebook.presto.operator.DriverContext;
@@ -33,12 +36,10 @@ import com.facebook.presto.operator.PartitionFunction;
 import com.facebook.presto.operator.PrecomputedHashGenerator;
 import com.facebook.presto.operator.exchange.LocalPartitionGenerator;
 import com.facebook.presto.operator.repartition.OptimizedPartitionedOutputOperator.OptimizedPartitionedOutputFactory;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.VariableWidthBlock;
+import com.facebook.presto.spi.page.PagesSerde;
+import com.facebook.presto.spi.page.SerializedPage;
 import com.facebook.presto.spi.plan.PlanNodeId;
-import com.facebook.presto.spi.type.ArrayType;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.sql.planner.OutputPartitioning;
 import com.facebook.presto.testing.TestingTaskContext;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Maps;
@@ -68,6 +69,15 @@ import static com.facebook.presto.block.BlockAssertions.createMapType;
 import static com.facebook.presto.block.BlockAssertions.createRandomLongsBlock;
 import static com.facebook.presto.block.BlockAssertions.createRandomStringBlock;
 import static com.facebook.presto.block.BlockAssertions.wrapBlock;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.DecimalType.createDecimalType;
+import static com.facebook.presto.common.type.Decimals.MAX_SHORT_PRECISION;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.RealType.REAL;
+import static com.facebook.presto.common.type.RowType.withDefaultFieldNames;
+import static com.facebook.presto.common.type.SmallintType.SMALLINT;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.facebook.presto.execution.buffer.BufferState.OPEN;
 import static com.facebook.presto.execution.buffer.BufferState.TERMINAL_BUFFER_STATES;
 import static com.facebook.presto.execution.buffer.OutputBuffers.BufferType.PARTITIONED;
@@ -76,15 +86,6 @@ import static com.facebook.presto.memory.context.AggregatedMemoryContext.newSimp
 import static com.facebook.presto.operator.PageAssertions.assertPageEquals;
 import static com.facebook.presto.operator.PageAssertions.mergePages;
 import static com.facebook.presto.operator.PageAssertions.updateBlockTypesWithHashBlockAndNullBlock;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.DecimalType.createDecimalType;
-import static com.facebook.presto.spi.type.Decimals.MAX_SHORT_PRECISION;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
-import static com.facebook.presto.spi.type.RealType.REAL;
-import static com.facebook.presto.spi.type.RowType.withDefaultFieldNames;
-import static com.facebook.presto.spi.type.SmallintType.SMALLINT;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
 import static com.facebook.presto.testing.TestingEnvironment.TYPE_MANAGER;
 import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
 import static com.facebook.presto.tpch.TpchMetadata.TINY_SCHEMA_NAME;
@@ -545,7 +546,7 @@ public class TestOptimizedPartitionedOutputOperator
     public void testEmptyPage()
     {
         List<Type> types = updateBlockTypesWithHashBlockAndNullBlock(ImmutableList.of(BIGINT), true, false);
-        Page page = PageAssertions.createPageWithRandomData(ImmutableList.of(BIGINT), 0, true, false, true, false, ImmutableList.of());
+        Page page = PageAssertions.createPageWithRandomData(ImmutableList.of(BIGINT), 0, true, false, 0.0f, 0.0f, false, ImmutableList.of());
 
         testPartitioned(types, ImmutableList.of(page), new DataSize(128, MEGABYTE));
     }
@@ -554,7 +555,7 @@ public class TestOptimizedPartitionedOutputOperator
     public void testPageWithNoBlocks()
     {
         List<Type> types = updateBlockTypesWithHashBlockAndNullBlock(ImmutableList.of(), false, false);
-        Page page = PageAssertions.createPageWithRandomData(ImmutableList.of(), 1, false, false, true, false, ImmutableList.of());
+        Page page = PageAssertions.createPageWithRandomData(ImmutableList.of(), 1, false, false, 0.0f, 0.0f, false, ImmutableList.of());
 
         testPartitionedForZeroBlocks(types, ImmutableList.of(page), new DataSize(128, MEGABYTE));
     }
@@ -568,12 +569,12 @@ public class TestOptimizedPartitionedOutputOperator
         Block[] blocks = new Block[4];
 
         // PreComputed Hash Block
-        blocks[0] = createRandomLongsBlock(POSITION_COUNT, false);
+        blocks[0] = createRandomLongsBlock(POSITION_COUNT, 0.0f);
 
         // Create blocks whose base blocks are with increasing number of positions
-        blocks[1] = wrapBlock(createRandomStringBlock(10, true, 10), POSITION_COUNT, ImmutableList.of(DICTIONARY, DICTIONARY));
-        blocks[2] = wrapBlock(createRandomStringBlock(100, true, 10), POSITION_COUNT, ImmutableList.of(DICTIONARY, DICTIONARY));
-        blocks[3] = wrapBlock(createRandomStringBlock(1000, true, 10), POSITION_COUNT, ImmutableList.of(DICTIONARY, DICTIONARY));
+        blocks[1] = wrapBlock(createRandomStringBlock(10, 0.2f, 10), POSITION_COUNT, ImmutableList.of(DICTIONARY, DICTIONARY));
+        blocks[2] = wrapBlock(createRandomStringBlock(100, 0.2f, 10), POSITION_COUNT, ImmutableList.of(DICTIONARY, DICTIONARY));
+        blocks[3] = wrapBlock(createRandomStringBlock(1000, 0.2f, 10), POSITION_COUNT, ImmutableList.of(DICTIONARY, DICTIONARY));
 
         Page page = new Page(blocks);
 
@@ -588,7 +589,7 @@ public class TestOptimizedPartitionedOutputOperator
         Block[] blocks = new Block[2];
 
         // PreComputed Hash Block
-        blocks[0] = createRandomLongsBlock(POSITION_COUNT, false);
+        blocks[0] = createRandomLongsBlock(POSITION_COUNT, 0.0f);
 
         // Create blocks whose base blocks are with increasing number of positions
         blocks[1] = createVariableWidthBlockOverSliceView(POSITION_COUNT);
@@ -606,18 +607,18 @@ public class TestOptimizedPartitionedOutputOperator
         List<Type> types = updateBlockTypesWithHashBlockAndNullBlock(targetTypes, true, false);
 
         // Test plain blocks: no block views, no Dicrtionary/RLE blocks
-        Page page = PageAssertions.createPageWithRandomData(targetTypes, POSITION_COUNT, true, false, true, false, ImmutableList.of());
+        Page page = PageAssertions.createPageWithRandomData(targetTypes, POSITION_COUNT, true, false, 0.2f, 0.2f, false, ImmutableList.of());
 
         // First test for the cases where the buffer can hold the whole page, then force flushing for every a few rows.
         testPartitioned(types, ImmutableList.of(page), new DataSize(128, MEGABYTE));
         testPartitioned(types, ImmutableList.of(page), new DataSize(1, KILOBYTE));
 
         // Test block views and Dicrtionary/RLE blocks
-        page = PageAssertions.createPageWithRandomData(targetTypes, POSITION_COUNT, true, false, true, true, ImmutableList.of(DICTIONARY, RUN_LENGTH, DICTIONARY, RUN_LENGTH));
+        page = PageAssertions.createPageWithRandomData(targetTypes, POSITION_COUNT, true, false, 0.2f, 0.2f, true, ImmutableList.of(DICTIONARY, RUN_LENGTH, DICTIONARY, RUN_LENGTH));
         testPartitioned(types, ImmutableList.of(page), new DataSize(128, MEGABYTE));
         testPartitioned(types, ImmutableList.of(page), new DataSize(1, KILOBYTE));
 
-        page = PageAssertions.createPageWithRandomData(targetTypes, POSITION_COUNT, true, false, true, true, ImmutableList.of(RUN_LENGTH, DICTIONARY, RUN_LENGTH, DICTIONARY));
+        page = PageAssertions.createPageWithRandomData(targetTypes, POSITION_COUNT, true, false, 0.2f, 0.2f, true, ImmutableList.of(RUN_LENGTH, DICTIONARY, RUN_LENGTH, DICTIONARY));
         testPartitioned(types, ImmutableList.of(page), new DataSize(128, MEGABYTE));
         testPartitioned(types, ImmutableList.of(page), new DataSize(1, KILOBYTE));
     }
@@ -627,9 +628,9 @@ public class TestOptimizedPartitionedOutputOperator
         List<Type> types = updateBlockTypesWithHashBlockAndNullBlock(targetTypes, true, false);
         List<Page> pages = new ArrayList<>();
         for (int i = 0; i < PAGE_COUNT; i++) {
-            pages.add(PageAssertions.createPageWithRandomData(targetTypes, POSITION_COUNT + RANDOM.nextInt(POSITION_COUNT), true, false, true, false, ImmutableList.of()));
-            pages.add(PageAssertions.createPageWithRandomData(targetTypes, POSITION_COUNT + RANDOM.nextInt(POSITION_COUNT), true, false, true, true, ImmutableList.of(DICTIONARY, DICTIONARY, RUN_LENGTH)));
-            pages.add(PageAssertions.createPageWithRandomData(targetTypes, POSITION_COUNT + RANDOM.nextInt(POSITION_COUNT), true, false, true, true, ImmutableList.of(RUN_LENGTH, DICTIONARY, DICTIONARY)));
+            pages.add(PageAssertions.createPageWithRandomData(targetTypes, POSITION_COUNT + RANDOM.nextInt(POSITION_COUNT), true, false, 0.2f, 0.2f, false, ImmutableList.of()));
+            pages.add(PageAssertions.createPageWithRandomData(targetTypes, POSITION_COUNT + RANDOM.nextInt(POSITION_COUNT), true, false, 0.2f, 0.2f, true, ImmutableList.of(DICTIONARY, DICTIONARY, RUN_LENGTH)));
+            pages.add(PageAssertions.createPageWithRandomData(targetTypes, POSITION_COUNT + RANDOM.nextInt(POSITION_COUNT), true, false, 0.2f, 0.2f, true, ImmutableList.of(RUN_LENGTH, DICTIONARY, DICTIONARY)));
         }
 
         testPartitioned(types, pages, new DataSize(128, MEGABYTE));
@@ -637,9 +638,9 @@ public class TestOptimizedPartitionedOutputOperator
 
         pages.clear();
         for (int i = 0; i < PAGE_COUNT / 3; i++) {
-            pages.add(PageAssertions.createPageWithRandomData(targetTypes, POSITION_COUNT + RANDOM.nextInt(POSITION_COUNT), true, false, true, false, ImmutableList.of()));
-            pages.add(PageAssertions.createPageWithRandomData(targetTypes, POSITION_COUNT + RANDOM.nextInt(POSITION_COUNT), true, false, true, true, ImmutableList.of(DICTIONARY, DICTIONARY, RUN_LENGTH)));
-            pages.add(PageAssertions.createPageWithRandomData(targetTypes, POSITION_COUNT + RANDOM.nextInt(POSITION_COUNT), true, false, true, true, ImmutableList.of(RUN_LENGTH, DICTIONARY, DICTIONARY)));
+            pages.add(PageAssertions.createPageWithRandomData(targetTypes, POSITION_COUNT + RANDOM.nextInt(POSITION_COUNT), true, false, 0.2f, 0.2f, false, ImmutableList.of()));
+            pages.add(PageAssertions.createPageWithRandomData(targetTypes, POSITION_COUNT + RANDOM.nextInt(POSITION_COUNT), true, false, 0.2f, 0.2f, true, ImmutableList.of(DICTIONARY, DICTIONARY, RUN_LENGTH)));
+            pages.add(PageAssertions.createPageWithRandomData(targetTypes, POSITION_COUNT + RANDOM.nextInt(POSITION_COUNT), true, false, 0.2f, 0.2f, true, ImmutableList.of(RUN_LENGTH, DICTIONARY, DICTIONARY)));
         }
 
         testPartitioned(types, pages, new DataSize(128, MEGABYTE));
@@ -650,7 +651,7 @@ public class TestOptimizedPartitionedOutputOperator
     {
         // Add a block that only contain null as the last block to force replicating all rows.
         List<Type> types = updateBlockTypesWithHashBlockAndNullBlock(targetTypes, true, true);
-        Page page = PageAssertions.createPageWithRandomData(targetTypes, POSITION_COUNT, true, true, true, false, ImmutableList.of());
+        Page page = PageAssertions.createPageWithRandomData(targetTypes, POSITION_COUNT, true, true, 0.2f, 0.2f, false, ImmutableList.of());
         testReplicated(types, ImmutableList.of(page), new DataSize(128, MEGABYTE));
         testReplicated(types, ImmutableList.of(page), new DataSize(1, KILOBYTE));
     }
@@ -660,7 +661,7 @@ public class TestOptimizedPartitionedOutputOperator
         List<Type> types = updateBlockTypesWithHashBlockAndNullBlock(targetTypes, true, true);
         List<Page> pages = new ArrayList<>();
         for (int i = 0; i < PAGE_COUNT; i++) {
-            pages.add(PageAssertions.createPageWithRandomData(targetTypes, POSITION_COUNT + RANDOM.nextInt(POSITION_COUNT), true, true, true, false, ImmutableList.of()));
+            pages.add(PageAssertions.createPageWithRandomData(targetTypes, POSITION_COUNT + RANDOM.nextInt(POSITION_COUNT), true, true, 0.2f, 0.2f, false, ImmutableList.of()));
         }
 
         testReplicated(types, pages, new DataSize(128, MEGABYTE));
@@ -779,17 +780,17 @@ public class TestOptimizedPartitionedOutputOperator
     {
         PagesSerdeFactory serdeFactory = new PagesSerdeFactory(new BlockEncodingManager(TYPE_MANAGER), false);
 
-        OptimizedPartitionedOutputFactory operatorFactory = new OptimizedPartitionedOutputFactory(
+        OutputPartitioning outputPartitioning = new OutputPartitioning(
                 partitionFunction,
                 partitionChannel,
                 ImmutableList.of(Optional.empty()),
                 false,
-                nullChannel,
-                buffer,
-                maxMemory);
+                nullChannel);
+
+        OptimizedPartitionedOutputFactory operatorFactory = new OptimizedPartitionedOutputFactory(buffer, maxMemory);
 
         return (OptimizedPartitionedOutputOperator) operatorFactory
-                .createOutputOperator(0, new PlanNodeId("plan-node-0"), types, Function.identity(), serdeFactory)
+                .createOutputOperator(0, new PlanNodeId("plan-node-0"), types, Function.identity(), Optional.of(outputPartitioning), serdeFactory)
                 .createOperator(createDriverContext());
     }
 

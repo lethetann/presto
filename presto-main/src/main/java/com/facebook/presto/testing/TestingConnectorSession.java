@@ -13,13 +13,13 @@
  */
 package com.facebook.presto.testing;
 
+import com.facebook.presto.common.function.SqlFunctionProperties;
+import com.facebook.presto.common.type.TimeZoneKey;
 import com.facebook.presto.execution.QueryIdGenerator;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.function.SqlFunctionProperties;
 import com.facebook.presto.spi.security.ConnectorIdentity;
 import com.facebook.presto.spi.session.PropertyMetadata;
-import com.facebook.presto.spi.type.TimeZoneKey;
 import com.facebook.presto.sql.analyzer.FeaturesConfig;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -30,8 +30,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 
+import static com.facebook.presto.common.type.TimeZoneKey.UTC_KEY;
 import static com.facebook.presto.spi.StandardErrorCode.INVALID_SESSION_PROPERTY;
-import static com.facebook.presto.spi.type.TimeZoneKey.UTC_KEY;
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static java.util.Locale.ENGLISH;
 import static java.util.Objects.requireNonNull;
@@ -82,6 +82,9 @@ public class TestingConnectorSession
         this.sqlFunctionProperties = SqlFunctionProperties.builder()
                 .setTimeZoneKey(requireNonNull(timeZoneKey, "timeZoneKey is null"))
                 .setLegacyTimestamp(isLegacyTimestamp)
+                .setSessionStartTime(startTime)
+                .setSessionLocale(locale)
+                .setSessionUser(user)
                 .build();
     }
 
@@ -101,12 +104,6 @@ public class TestingConnectorSession
     public ConnectorIdentity getIdentity()
     {
         return identity;
-    }
-
-    @Override
-    public TimeZoneKey getTimeZoneKey()
-    {
-        return sqlFunctionProperties.getTimeZoneKey();
     }
 
     @Override
@@ -134,15 +131,9 @@ public class TestingConnectorSession
     }
 
     @Override
-    public boolean isLegacyTimestamp()
-    {
-        return sqlFunctionProperties.isLegacyTimestamp();
-    }
-
-    @Override
     public SqlFunctionProperties getSqlFunctionProperties()
     {
-        return SqlFunctionProperties.builder().setTimeZoneKey(UTC_KEY).build();
+        return sqlFunctionProperties;
     }
 
     @Override

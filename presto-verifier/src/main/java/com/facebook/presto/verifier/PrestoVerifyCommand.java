@@ -14,15 +14,10 @@
 package com.facebook.presto.verifier;
 
 import com.facebook.presto.sql.parser.SqlParserOptions;
-import com.facebook.presto.sql.tree.Property;
 import com.facebook.presto.verifier.framework.AbstractVerifyCommand;
 import com.facebook.presto.verifier.framework.SourceQuery;
 import com.facebook.presto.verifier.prestoaction.PrestoExceptionClassifier;
 import com.facebook.presto.verifier.prestoaction.SqlExceptionClassifier;
-import com.facebook.presto.verifier.resolver.ExceededGlobalMemoryLimitFailureResolver;
-import com.facebook.presto.verifier.resolver.ExceededTimeLimitFailureResolver;
-import com.facebook.presto.verifier.resolver.FailureResolverFactory;
-import com.facebook.presto.verifier.resolver.TooManyOpenPartitionsFailureResolver;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.inject.Module;
@@ -61,6 +56,12 @@ public class PrestoVerifyCommand
     }
 
     @Override
+    public Set<String> getCustomQueryActionTypes()
+    {
+        return ImmutableSet.of();
+    }
+
+    @Override
     public List<Class<? extends Predicate<SourceQuery>>> getCustomQueryFilterClasses()
     {
         return ImmutableList.of();
@@ -69,21 +70,6 @@ public class PrestoVerifyCommand
     @Override
     public SqlExceptionClassifier getSqlExceptionClassifier()
     {
-        return new PrestoExceptionClassifier(ImmutableSet.of(), ImmutableSet.of());
-    }
-
-    @Override
-    public List<FailureResolverFactory> getFailureResolverFactories()
-    {
-        return ImmutableList.of(
-                new ExceededGlobalMemoryLimitFailureResolver.Factory(),
-                new ExceededTimeLimitFailureResolver.Factory(),
-                new TooManyOpenPartitionsFailureResolver.Factory());
-    }
-
-    @Override
-    public List<Property> getTablePropertyOverrides()
-    {
-        return ImmutableList.of();
+        return PrestoExceptionClassifier.defaultBuilder().build();
     }
 }

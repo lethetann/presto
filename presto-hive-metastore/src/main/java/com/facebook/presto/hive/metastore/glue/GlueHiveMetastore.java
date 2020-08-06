@@ -53,8 +53,10 @@ import com.amazonaws.services.glue.model.UpdateDatabaseRequest;
 import com.amazonaws.services.glue.model.UpdatePartitionRequest;
 import com.amazonaws.services.glue.model.UpdateTableRequest;
 import com.facebook.airlift.log.Logger;
+import com.facebook.presto.common.predicate.Domain;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.hive.HdfsContext;
 import com.facebook.presto.hive.HdfsEnvironment;
-import com.facebook.presto.hive.HdfsEnvironment.HdfsContext;
 import com.facebook.presto.hive.HiveType;
 import com.facebook.presto.hive.PartitionNotFoundException;
 import com.facebook.presto.hive.SchemaAlreadyExistsException;
@@ -80,7 +82,6 @@ import com.facebook.presto.spi.security.ConnectorIdentity;
 import com.facebook.presto.spi.security.PrestoPrincipal;
 import com.facebook.presto.spi.security.RoleGrant;
 import com.facebook.presto.spi.statistics.ColumnStatisticType;
-import com.facebook.presto.spi.type.Type;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
@@ -104,19 +105,20 @@ import java.util.concurrent.ExecutorCompletionService;
 import java.util.concurrent.Future;
 import java.util.function.Function;
 
-import static com.facebook.presto.hive.MetastoreErrorCode.HIVE_METASTORE_ERROR;
-import static com.facebook.presto.hive.MetastoreErrorCode.HIVE_PARTITION_DROPPED_DURING_QUERY;
+import static com.facebook.presto.hive.HiveErrorCode.HIVE_METASTORE_ERROR;
+import static com.facebook.presto.hive.HiveErrorCode.HIVE_PARTITION_DROPPED_DURING_QUERY;
+import static com.facebook.presto.hive.metastore.MetastoreUtil.convertPredicateToParts;
 import static com.facebook.presto.hive.metastore.MetastoreUtil.createDirectory;
+import static com.facebook.presto.hive.metastore.MetastoreUtil.getHiveBasicStatistics;
 import static com.facebook.presto.hive.metastore.MetastoreUtil.makePartName;
 import static com.facebook.presto.hive.metastore.MetastoreUtil.toPartitionValues;
+import static com.facebook.presto.hive.metastore.MetastoreUtil.updateStatisticsParameters;
 import static com.facebook.presto.hive.metastore.MetastoreUtil.verifyCanDropColumn;
 import static com.facebook.presto.hive.metastore.PrestoTableType.MANAGED_TABLE;
 import static com.facebook.presto.hive.metastore.PrestoTableType.VIRTUAL_VIEW;
 import static com.facebook.presto.hive.metastore.glue.GlueExpressionUtil.buildGlueExpression;
 import static com.facebook.presto.hive.metastore.glue.converter.GlueInputConverter.convertColumn;
 import static com.facebook.presto.hive.metastore.glue.converter.GlueInputConverter.toTableInput;
-import static com.facebook.presto.hive.metastore.thrift.ThriftMetastoreUtil.getHiveBasicStatistics;
-import static com.facebook.presto.hive.metastore.thrift.ThriftMetastoreUtil.updateStatisticsParameters;
 import static com.facebook.presto.spi.StandardErrorCode.ALREADY_EXISTS;
 import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
 import static com.facebook.presto.spi.security.PrincipalType.USER;
@@ -656,16 +658,20 @@ public class GlueHiveMetastore
      *     ['', '2', '']
      * </pre>
      *
-     * @param parts Full or partial list of partition values to filter on. Keys without filter will be empty strings.
+     * @param partitionPredicates Full or partial list of partition values to filter on. Keys without filter will be empty strings.
      * @return a list of partition names.
      */
     @Override
-    public Optional<List<String>> getPartitionNamesByParts(String databaseName, String tableName, List<String> parts)
+    public List<String> getPartitionNamesByFilter(
+            String databaseName,
+            String tableName,
+            Map<Column, Domain> partitionPredicates)
     {
         Table table = getTableOrElseThrow(databaseName, tableName);
+        List<String> parts = convertPredicateToParts(partitionPredicates);
         String expression = buildGlueExpression(table.getPartitionColumns(), parts);
         List<Partition> partitions = getPartitions(databaseName, tableName, expression);
-        return Optional.of(buildPartitionNames(table.getPartitionColumns(), partitions));
+        return buildPartitionNames(table.getPartitionColumns(), partitions);
     }
 
     private List<Partition> getPartitions(String databaseName, String tableName, String expression)

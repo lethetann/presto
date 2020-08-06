@@ -14,39 +14,43 @@
 package com.facebook.presto.operator.scalar;
 
 import com.facebook.presto.annotation.UsedByGeneratedCode;
+import com.facebook.presto.common.NotSupportedException;
+import com.facebook.presto.common.PageBuilder;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.block.DuplicateMapKeyException;
+import com.facebook.presto.common.block.MapBlockBuilder;
+import com.facebook.presto.common.function.OperatorType;
+import com.facebook.presto.common.function.QualifiedFunctionName;
+import com.facebook.presto.common.function.SqlFunctionProperties;
+import com.facebook.presto.common.type.MapType;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeManager;
+import com.facebook.presto.common.type.TypeSignature;
+import com.facebook.presto.common.type.TypeSignatureParameter;
 import com.facebook.presto.metadata.BoundVariables;
 import com.facebook.presto.metadata.FunctionManager;
 import com.facebook.presto.metadata.SqlScalarFunction;
-import com.facebook.presto.spi.ConnectorSession;
-import com.facebook.presto.spi.PageBuilder;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.block.DuplicateMapKeyException;
-import com.facebook.presto.spi.block.MapBlockBuilder;
 import com.facebook.presto.spi.function.FunctionKind;
-import com.facebook.presto.spi.function.OperatorType;
-import com.facebook.presto.spi.function.QualifiedFunctionName;
 import com.facebook.presto.spi.function.Signature;
-import com.facebook.presto.spi.type.MapType;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeManager;
-import com.facebook.presto.spi.type.TypeSignature;
-import com.facebook.presto.spi.type.TypeSignatureParameter;
+import com.facebook.presto.spi.function.SqlFunctionVisibility;
 import com.google.common.collect.ImmutableList;
 
 import java.lang.invoke.MethodHandle;
 import java.util.Optional;
 
+import static com.facebook.presto.common.function.OperatorType.INDETERMINATE;
+import static com.facebook.presto.common.type.StandardTypes.MAP;
+import static com.facebook.presto.common.type.TypeUtils.readNativeValue;
 import static com.facebook.presto.metadata.BuiltInFunctionNamespaceManager.DEFAULT_NAMESPACE;
 import static com.facebook.presto.operator.scalar.BuiltInScalarFunctionImplementation.ArgumentProperty.valueTypeArgumentProperty;
 import static com.facebook.presto.operator.scalar.BuiltInScalarFunctionImplementation.NullConvention.RETURN_NULL_ON_NULL;
 import static com.facebook.presto.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
-import static com.facebook.presto.spi.function.OperatorType.INDETERMINATE;
+import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
 import static com.facebook.presto.spi.function.Signature.comparableTypeParameter;
 import static com.facebook.presto.spi.function.Signature.typeVariable;
-import static com.facebook.presto.spi.type.StandardTypes.MAP;
-import static com.facebook.presto.spi.type.TypeUtils.readNativeValue;
+import static com.facebook.presto.spi.function.SqlFunctionVisibility.PUBLIC;
 import static com.facebook.presto.sql.analyzer.TypeSignatureProvider.fromTypeSignatures;
 import static com.facebook.presto.sql.analyzer.TypeSignatureProvider.fromTypes;
 import static com.facebook.presto.util.Failures.checkCondition;
@@ -67,7 +71,7 @@ public final class MapConstructor
             MethodHandle.class,
             MethodHandle.class,
             State.class,
-            ConnectorSession.class,
+            SqlFunctionProperties.class,
             Block.class,
             Block.class);
 
@@ -86,9 +90,9 @@ public final class MapConstructor
     }
 
     @Override
-    public boolean isHidden()
+    public SqlFunctionVisibility getVisibility()
     {
-        return false;
+        return PUBLIC;
     }
 
     @Override
@@ -132,7 +136,7 @@ public final class MapConstructor
             MethodHandle keyHashCode,
             MethodHandle keyIndeterminate,
             State state,
-            ConnectorSession session,
+            SqlFunctionProperties properties,
             Block keyBlock,
             Block valueBlock)
     {
@@ -154,7 +158,7 @@ public final class MapConstructor
             Object keyObject = readNativeValue(mapType.getKeyType(), keyBlock, i);
             try {
                 if ((boolean) keyIndeterminate.invoke(keyObject, false)) {
-                    throw new PrestoException(INVALID_FUNCTION_ARGUMENT, "map key cannot be indeterminate: " + mapType.getKeyType().getObjectValue(session, keyBlock, i));
+                    throw new PrestoException(INVALID_FUNCTION_ARGUMENT, "map key cannot be indeterminate: " + mapType.getKeyType().getObjectValue(properties, keyBlock, i));
                 }
             }
             catch (Throwable t) {
@@ -168,7 +172,10 @@ public final class MapConstructor
             mapBlockBuilder.closeEntryStrict();
         }
         catch (DuplicateMapKeyException e) {
-            throw new PrestoException(INVALID_FUNCTION_ARGUMENT, e.getDetailedMessage(mapType.getKeyType(), session), e);
+            throw new PrestoException(INVALID_FUNCTION_ARGUMENT, e.getDetailedMessage(mapType.getKeyType(), properties), e);
+        }
+        catch (NotSupportedException e) {
+            throw new PrestoException(NOT_SUPPORTED, e.getMessage(), e);
         }
         finally {
             pageBuilder.declarePosition();

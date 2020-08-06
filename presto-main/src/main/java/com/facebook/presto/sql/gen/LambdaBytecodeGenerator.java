@@ -24,11 +24,10 @@ import com.facebook.presto.bytecode.ParameterizedType;
 import com.facebook.presto.bytecode.Scope;
 import com.facebook.presto.bytecode.Variable;
 import com.facebook.presto.bytecode.expression.BytecodeExpression;
+import com.facebook.presto.common.function.SqlFunctionProperties;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.operator.aggregation.AccumulatorCompiler;
 import com.facebook.presto.operator.aggregation.LambdaProvider;
-import com.facebook.presto.spi.ConnectorSession;
-import com.facebook.presto.spi.function.SqlFunctionProperties;
 import com.facebook.presto.spi.relation.CallExpression;
 import com.facebook.presto.spi.relation.ConstantExpression;
 import com.facebook.presto.spi.relation.InputReferenceExpression;
@@ -65,11 +64,11 @@ import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
 import static com.facebook.presto.sql.gen.BytecodeUtils.boxPrimitiveIfNecessary;
 import static com.facebook.presto.sql.gen.BytecodeUtils.unboxPrimitiveIfNecessary;
 import static com.facebook.presto.sql.gen.LambdaCapture.LAMBDA_CAPTURE_METHOD;
-import static com.facebook.presto.sql.gen.LambdaExpressionExtractor.extractLambdaExpressions;
 import static com.facebook.presto.util.CompilerUtils.defineClass;
 import static com.facebook.presto.util.CompilerUtils.makeClassName;
 import static com.facebook.presto.util.Failures.checkCondition;
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static java.util.Objects.requireNonNull;
 import static org.objectweb.asm.Type.getMethodType;
 import static org.objectweb.asm.Type.getType;
@@ -100,7 +99,49 @@ public class LambdaBytecodeGenerator
             SqlFunctionProperties sqlFunctionProperties,
             String methodNamePrefix)
     {
-        Set<LambdaDefinitionExpression> lambdaExpressions = ImmutableSet.copyOf(extractLambdaExpressions(expression));
+        return generateMethodsForLambda(containerClassDefinition, callSiteBinder, cachedInstanceBinder, ImmutableList.of(expression), metadata, sqlFunctionProperties, methodNamePrefix);
+    }
+
+    public static Map<LambdaDefinitionExpression, CompiledLambda> generateMethodsForLambda(
+            ClassDefinition containerClassDefinition,
+            CallSiteBinder callSiteBinder,
+            CachedInstanceBinder cachedInstanceBinder,
+            RowExpression expression,
+            Metadata metadata,
+            SqlFunctionProperties sqlFunctionProperties,
+            String methodNamePrefix,
+            Set<LambdaDefinitionExpression> existingCompiledLambdas)
+    {
+        return generateMethodsForLambda(containerClassDefinition, callSiteBinder, cachedInstanceBinder, ImmutableList.of(expression), metadata, sqlFunctionProperties, methodNamePrefix, existingCompiledLambdas);
+    }
+
+    public static Map<LambdaDefinitionExpression, CompiledLambda> generateMethodsForLambda(
+            ClassDefinition containerClassDefinition,
+            CallSiteBinder callSiteBinder,
+            CachedInstanceBinder cachedInstanceBinder,
+            List<RowExpression> expressions,
+            Metadata metadata,
+            SqlFunctionProperties sqlFunctionProperties,
+            String methodNamePrefix)
+    {
+        return generateMethodsForLambda(containerClassDefinition, callSiteBinder, cachedInstanceBinder, expressions, metadata, sqlFunctionProperties, methodNamePrefix, ImmutableSet.of());
+    }
+
+    private static Map<LambdaDefinitionExpression, CompiledLambda> generateMethodsForLambda(
+            ClassDefinition containerClassDefinition,
+            CallSiteBinder callSiteBinder,
+            CachedInstanceBinder cachedInstanceBinder,
+            List<RowExpression> expressions,
+            Metadata metadata,
+            SqlFunctionProperties sqlFunctionProperties,
+            String methodNamePrefix,
+            Set<LambdaDefinitionExpression> existingCompiledLambdas)
+    {
+        Set<LambdaDefinitionExpression> lambdaExpressions = expressions.stream()
+                .map(LambdaExpressionExtractor::extractLambdaExpressions)
+                .flatMap(List::stream)
+                .filter(lambda -> !existingCompiledLambdas.contains(lambda))
+                .collect(toImmutableSet());
         ImmutableMap.Builder<LambdaDefinitionExpression, CompiledLambda> compiledLambdaMap = ImmutableMap.builder();
 
         int counter = 0;
@@ -124,7 +165,7 @@ public class LambdaBytecodeGenerator
     /**
      * @return a MethodHandle field that represents the lambda expression
      */
-    public static CompiledLambda preGenerateLambdaExpression(
+    private static CompiledLambda preGenerateLambdaExpression(
             LambdaDefinitionExpression lambdaExpression,
             String methodName,
             ClassDefinition classDefinition,
@@ -137,7 +178,7 @@ public class LambdaBytecodeGenerator
         ImmutableList.Builder<Parameter> parameters = ImmutableList.builder();
         ImmutableMap.Builder<String, ParameterAndType> parameterMapBuilder = ImmutableMap.builder();
 
-        parameters.add(arg("session", ConnectorSession.class));
+        parameters.add(arg("properties", SqlFunctionProperties.class));
         for (int i = 0; i < lambdaExpression.getArguments().size(); i++) {
             Class<?> type = Primitives.wrap(lambdaExpression.getArgumentTypes().get(i).getJavaType());
             String argumentName = lambdaExpression.getArguments().get(i);
@@ -225,7 +266,7 @@ public class LambdaBytecodeGenerator
         }
 
         List<BytecodeExpression> captureVariables = ImmutableList.<BytecodeExpression>builder()
-                .add(scope.getThis(), scope.getVariable("session"))
+                .add(scope.getThis(), scope.getVariable("properties"))
                 .addAll(captureVariableBuilder.build())
                 .build();
 
@@ -257,7 +298,7 @@ public class LambdaBytecodeGenerator
                 type(Object.class),
                 type(LambdaProvider.class));
 
-        FieldDefinition sessionField = lambdaProviderClassDefinition.declareField(a(PRIVATE), "session", ConnectorSession.class);
+        FieldDefinition propertiesField = lambdaProviderClassDefinition.declareField(a(PRIVATE), "properties", SqlFunctionProperties.class);
 
         CallSiteBinder callSiteBinder = new CallSiteBinder();
         CachedInstanceBinder cachedInstanceBinder = new CachedInstanceBinder(lambdaProviderClassDefinition, callSiteBinder);
@@ -279,7 +320,7 @@ public class LambdaBytecodeGenerator
         Scope scope = method.getScope();
         BytecodeBlock body = method.getBody();
         scope.declareVariable("wasNull", body, constantFalse());
-        scope.declareVariable("session", body, method.getThis().getField(sessionField));
+        scope.declareVariable("properties", body, method.getThis().getField(propertiesField));
 
         RowExpressionCompiler rowExpressionCompiler = new RowExpressionCompiler(
                 lambdaProviderClassDefinition,
@@ -306,16 +347,16 @@ public class LambdaBytecodeGenerator
                 .retObject();
 
         // constructor
-        Parameter sessionParameter = arg("session", ConnectorSession.class);
+        Parameter propertiesParameter = arg("properties", SqlFunctionProperties.class);
 
-        MethodDefinition constructorDefinition = lambdaProviderClassDefinition.declareConstructor(a(PUBLIC), sessionParameter);
+        MethodDefinition constructorDefinition = lambdaProviderClassDefinition.declareConstructor(a(PUBLIC), propertiesParameter);
         BytecodeBlock constructorBody = constructorDefinition.getBody();
         Variable constructorThisVariable = constructorDefinition.getThis();
 
         constructorBody.comment("super();")
                 .append(constructorThisVariable)
                 .invokeConstructor(Object.class)
-                .append(constructorThisVariable.setField(sessionField, sessionParameter));
+                .append(constructorThisVariable.setField(propertiesField, propertiesParameter));
 
         cachedInstanceBinder.generateInitializations(constructorThisVariable, constructorBody);
         constructorBody.ret();

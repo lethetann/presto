@@ -16,6 +16,8 @@ package com.facebook.presto.testing;
 import com.facebook.presto.GroupByHashPageIndexerFactory;
 import com.facebook.presto.PagesIndexPageSorter;
 import com.facebook.presto.block.BlockEncodingManager;
+import com.facebook.presto.common.block.BlockEncodingSerde;
+import com.facebook.presto.common.type.TypeManager;
 import com.facebook.presto.connector.ConnectorAwareNodeManager;
 import com.facebook.presto.cost.ConnectorFilterStatsCalculatorService;
 import com.facebook.presto.cost.FilterStatsCalculator;
@@ -41,7 +43,6 @@ import com.facebook.presto.spi.relation.ExpressionOptimizer;
 import com.facebook.presto.spi.relation.PredicateCompiler;
 import com.facebook.presto.spi.relation.RowExpression;
 import com.facebook.presto.spi.relation.RowExpressionService;
-import com.facebook.presto.spi.type.TypeManager;
 import com.facebook.presto.sql.analyzer.FeaturesConfig;
 import com.facebook.presto.sql.gen.JoinCompiler;
 import com.facebook.presto.sql.gen.RowExpressionPredicateCompiler;
@@ -66,6 +67,7 @@ public class TestingConnectorContext
     private final PredicateCompiler predicateCompiler = new RowExpressionPredicateCompiler(metadata);
     private final DeterminismEvaluator determinismEvaluator = new RowExpressionDeterminismEvaluator(functionManager);
     private final FilterStatsCalculatorService filterStatsCalculatorService = new ConnectorFilterStatsCalculatorService(new FilterStatsCalculator(metadata, new ScalarStatsCalculator(metadata), new StatsNormalizer()));
+    private final BlockEncodingSerde blockEncodingSerde = new BlockEncodingManager(typeManager);
 
     @Override
     public NodeManager getNodeManager()
@@ -144,5 +146,11 @@ public class TestingConnectorContext
     public FilterStatsCalculatorService getFilterStatsCalculatorService()
     {
         return filterStatsCalculatorService;
+    }
+
+    @Override
+    public BlockEncodingSerde getBlockEncodingSerde()
+    {
+        return blockEncodingSerde;
     }
 }

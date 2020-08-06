@@ -21,7 +21,9 @@ import com.facebook.presto.spi.GroupingProperty;
 import com.facebook.presto.spi.LocalProperty;
 import com.facebook.presto.spi.SortingProperty;
 import com.facebook.presto.spi.plan.AggregationNode;
+import com.facebook.presto.spi.plan.DistinctLimitNode;
 import com.facebook.presto.spi.plan.LimitNode;
+import com.facebook.presto.spi.plan.MarkDistinctNode;
 import com.facebook.presto.spi.plan.PlanNode;
 import com.facebook.presto.spi.plan.PlanNodeIdAllocator;
 import com.facebook.presto.spi.plan.TopNNode;
@@ -34,7 +36,6 @@ import com.facebook.presto.sql.planner.PlanVariableAllocator;
 import com.facebook.presto.sql.planner.TypeProvider;
 import com.facebook.presto.sql.planner.optimizations.StreamPropertyDerivations.StreamProperties;
 import com.facebook.presto.sql.planner.plan.ApplyNode;
-import com.facebook.presto.sql.planner.plan.DistinctLimitNode;
 import com.facebook.presto.sql.planner.plan.EnforceSingleRowNode;
 import com.facebook.presto.sql.planner.plan.ExchangeNode;
 import com.facebook.presto.sql.planner.plan.ExplainAnalyzeNode;
@@ -42,7 +43,6 @@ import com.facebook.presto.sql.planner.plan.IndexJoinNode;
 import com.facebook.presto.sql.planner.plan.InternalPlanVisitor;
 import com.facebook.presto.sql.planner.plan.JoinNode;
 import com.facebook.presto.sql.planner.plan.LateralJoinNode;
-import com.facebook.presto.sql.planner.plan.MarkDistinctNode;
 import com.facebook.presto.sql.planner.plan.OutputNode;
 import com.facebook.presto.sql.planner.plan.RowNumberNode;
 import com.facebook.presto.sql.planner.plan.SemiJoinNode;
@@ -70,10 +70,10 @@ import static com.facebook.presto.SystemSessionProperties.getTaskWriterCount;
 import static com.facebook.presto.SystemSessionProperties.isDistributedSortEnabled;
 import static com.facebook.presto.SystemSessionProperties.isSpillEnabled;
 import static com.facebook.presto.SystemSessionProperties.isTableWriterMergeOperatorEnabled;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.VarbinaryType.VARBINARY;
 import static com.facebook.presto.operator.aggregation.AggregationUtils.hasSingleNodeExecutionPreference;
 import static com.facebook.presto.operator.aggregation.AggregationUtils.isDecomposable;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.VarbinaryType.VARBINARY;
 import static com.facebook.presto.sql.planner.SystemPartitioningHandle.FIXED_ARBITRARY_DISTRIBUTION;
 import static com.facebook.presto.sql.planner.SystemPartitioningHandle.FIXED_HASH_DISTRIBUTION;
 import static com.facebook.presto.sql.planner.SystemPartitioningHandle.SINGLE_DISTRIBUTION;
@@ -486,11 +486,11 @@ public class AddLocalExchanges
         @Override
         public PlanWithProperties visitTableWriter(TableWriterNode originalTableWriterNode, StreamPreferredProperties parentPreferences)
         {
-            if (originalTableWriterNode.getPartitioningScheme().isPresent() && getTaskPartitionedWriterCount(session) == 1) {
+            if (originalTableWriterNode.getTablePartitioningScheme().isPresent() && getTaskPartitionedWriterCount(session) == 1) {
                 return planAndEnforceChildren(originalTableWriterNode, singleStream(), defaultParallelism(session));
             }
 
-            if (!originalTableWriterNode.getPartitioningScheme().isPresent() && getTaskWriterCount(session) == 1) {
+            if (!originalTableWriterNode.getTablePartitioningScheme().isPresent() && getTaskWriterCount(session) == 1) {
                 return planAndEnforceChildren(originalTableWriterNode, singleStream(), defaultParallelism(session));
             }
 
@@ -506,7 +506,7 @@ public class AddLocalExchanges
 
             PlanWithProperties tableWriter;
 
-            if (!originalTableWriterNode.getPartitioningScheme().isPresent()) {
+            if (!originalTableWriterNode.getTablePartitioningScheme().isPresent()) {
                 tableWriter = planAndEnforceChildren(
                         new TableWriterNode(
                                 originalTableWriterNode.getId(),
@@ -517,7 +517,8 @@ public class AddLocalExchanges
                                 variableAllocator.newVariable("partialcontext", VARBINARY),
                                 originalTableWriterNode.getColumns(),
                                 originalTableWriterNode.getColumnNames(),
-                                originalTableWriterNode.getPartitioningScheme(),
+                                originalTableWriterNode.getTablePartitioningScheme(),
+                                originalTableWriterNode.getPreferredShufflePartitioningScheme(),
                                 statisticAggregations.map(StatisticAggregations.Parts::getPartialAggregation)),
                         fixedParallelism(),
                         fixedParallelism());
@@ -529,7 +530,7 @@ public class AddLocalExchanges
                                 idAllocator.getNextId(),
                                 LOCAL,
                                 source.getNode(),
-                                originalTableWriterNode.getPartitioningScheme().get()),
+                                originalTableWriterNode.getTablePartitioningScheme().get()),
                         source.getProperties());
                 tableWriter = deriveProperties(
                         new TableWriterNode(
@@ -541,7 +542,8 @@ public class AddLocalExchanges
                                 variableAllocator.newVariable("partialcontext", VARBINARY),
                                 originalTableWriterNode.getColumns(),
                                 originalTableWriterNode.getColumnNames(),
-                                originalTableWriterNode.getPartitioningScheme(),
+                                originalTableWriterNode.getTablePartitioningScheme(),
+                                originalTableWriterNode.getPreferredShufflePartitioningScheme(),
                                 statisticAggregations.map(StatisticAggregations.Parts::getPartialAggregation)),
                         exchange.getProperties());
             }

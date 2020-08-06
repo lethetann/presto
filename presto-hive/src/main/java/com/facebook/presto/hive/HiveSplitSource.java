@@ -66,8 +66,6 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.util.concurrent.Futures.immediateFuture;
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 import static io.airlift.units.DataSize.succinctBytes;
-import static java.lang.Math.min;
-import static java.lang.Math.toIntExact;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 
@@ -79,9 +77,10 @@ class HiveSplitSource
     private final String queryId;
     private final String databaseName;
     private final String tableName;
+    private final CacheQuotaRequirement cacheQuotaRequirement;
     private final PerBucket queues;
     private final AtomicInteger bufferedInternalSplitCount = new AtomicInteger();
-    private final int maxOutstandingSplitsBytes;
+    private final long maxOutstandingSplitsBytes;
 
     private final DataSize maxSplitSize;
     private final DataSize maxInitialSplitSize;
@@ -100,6 +99,7 @@ class HiveSplitSource
             ConnectorSession session,
             String databaseName,
             String tableName,
+            CacheQuotaRequirement cacheQuotaRequirement,
             PerBucket queues,
             int maxInitialSplits,
             DataSize maxOutstandingSplitsSize,
@@ -110,9 +110,10 @@ class HiveSplitSource
         requireNonNull(session, "session is null");
         this.queryId = session.getQueryId();
         this.databaseName = requireNonNull(databaseName, "databaseName is null");
+        this.cacheQuotaRequirement = requireNonNull(cacheQuotaRequirement, "cacheQuotaRequirement is null");
         this.tableName = requireNonNull(tableName, "tableName is null");
         this.queues = requireNonNull(queues, "queues is null");
-        this.maxOutstandingSplitsBytes = toIntExact(maxOutstandingSplitsSize.toBytes());
+        this.maxOutstandingSplitsBytes = requireNonNull(maxOutstandingSplitsSize, "maxOutstandingSplitsSize is null").toBytes();
         this.splitLoader = requireNonNull(splitLoader, "splitLoader is null");
         this.highMemorySplitSourceCounter = requireNonNull(highMemorySplitSourceCounter, "highMemorySplitSourceCounter is null");
 
@@ -126,6 +127,7 @@ class HiveSplitSource
             ConnectorSession session,
             String databaseName,
             String tableName,
+            CacheQuotaRequirement cacheQuotaRequirement,
             int maxInitialSplits,
             int maxOutstandingSplits,
             DataSize maxOutstandingSplitsSize,
@@ -137,6 +139,7 @@ class HiveSplitSource
                 session,
                 databaseName,
                 tableName,
+                cacheQuotaRequirement,
                 new PerBucket()
                 {
                     private final AsyncQueue<InternalHiveSplit> queue = new AsyncQueue<>(maxOutstandingSplits, executor);
@@ -185,6 +188,7 @@ class HiveSplitSource
             ConnectorSession session,
             String databaseName,
             String tableName,
+            CacheQuotaRequirement cacheQuotaRequirement,
             int estimatedOutstandingSplitsPerBucket,
             int maxInitialSplits,
             DataSize maxOutstandingSplitsSize,
@@ -196,6 +200,7 @@ class HiveSplitSource
                 session,
                 databaseName,
                 tableName,
+                cacheQuotaRequirement,
                 new PerBucket()
                 {
                     private final Map<Integer, AsyncQueue<InternalHiveSplit>> queues = new ConcurrentHashMap<>();
@@ -264,6 +269,7 @@ class HiveSplitSource
             ConnectorSession session,
             String databaseName,
             String tableName,
+            CacheQuotaRequirement cacheQuotaRequirement,
             int maxInitialSplits,
             DataSize maxOutstandingSplitsSize,
             HiveSplitLoader splitLoader,
@@ -274,6 +280,7 @@ class HiveSplitSource
                 session,
                 databaseName,
                 tableName,
+                cacheQuotaRequirement,
                 new PerBucket()
                 {
                     @GuardedBy("this")
@@ -460,7 +467,17 @@ class HiveSplitSource
                 InternalHiveBlock block = internalSplit.currentBlock();
                 long splitBytes;
                 if (internalSplit.isSplittable()) {
-                    splitBytes = min(maxSplitBytes, block.getEnd() - internalSplit.getStart());
+                    long remainingBlockBytes = block.getEnd() - internalSplit.getStart();
+                    if (remainingBlockBytes <= maxSplitBytes) {
+                        splitBytes = remainingBlockBytes;
+                    }
+                    else if (maxSplitBytes * 2 >= remainingBlockBytes) {
+                        //  Second to last split in this block, generate two evenly sized splits
+                        splitBytes = remainingBlockBytes / 2;
+                    }
+                    else {
+                        splitBytes = maxSplitBytes;
+                    }
                 }
                 else {
                     splitBytes = internalSplit.getEnd() - internalSplit.getStart();
@@ -479,12 +496,14 @@ class HiveSplitSource
                         block.getAddresses(),
                         internalSplit.getReadBucketNumber(),
                         internalSplit.getTableBucketNumber(),
-                        internalSplit.isForceLocalScheduling(),
+                        internalSplit.getNodeSelectionStrategy(),
                         internalSplit.getPartitionInfo().getPartitionDataColumnCount(),
                         internalSplit.getPartitionSchemaDifference(),
                         internalSplit.getBucketConversion(),
                         internalSplit.isS3SelectPushdownEnabled(),
-                        internalSplit.getExtraFileInfo()));
+                        internalSplit.getExtraFileInfo(),
+                        cacheQuotaRequirement,
+                        internalSplit.getEncryptionInformation()));
 
                 internalSplit.increaseStart(splitBytes);
 

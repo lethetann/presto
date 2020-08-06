@@ -13,8 +13,9 @@
  */
 package com.facebook.presto.spi.function;
 
+import com.facebook.presto.common.function.QualifiedFunctionName;
+import com.facebook.presto.common.type.TypeSignature;
 import com.facebook.presto.spi.api.Experimental;
-import com.facebook.presto.spi.type.TypeSignature;
 
 import java.util.Collection;
 import java.util.List;
@@ -23,8 +24,6 @@ import java.util.Optional;
 @Experimental
 public interface FunctionNamespaceManager<F extends SqlFunction>
 {
-    String getName();
-
     /**
      * Start a transaction.
      */
@@ -47,6 +46,12 @@ public interface FunctionNamespaceManager<F extends SqlFunction>
      * TODO: Support transaction
      */
     void createFunction(SqlInvokedFunction function, boolean replace);
+
+    /**
+     * Alter the specified function.
+     * TODO: Support transaction
+     */
+    void alterFunction(QualifiedFunctionName functionName, Optional<List<TypeSignature>> parameterTypes, AlterRoutineCharacteristics alterRoutineCharacteristics);
 
     /**
      * Drop the specified function.

@@ -27,6 +27,8 @@
  */
 package com.facebook.presto.operator.repartition;
 
+import com.facebook.presto.common.block.ArrayAllocator;
+import com.facebook.presto.common.block.Block;
 import com.google.common.annotations.VisibleForTesting;
 import io.airlift.slice.SliceOutput;
 import org.openjdk.jol.info.ClassLayout;
@@ -35,8 +37,9 @@ import static com.facebook.presto.array.Arrays.ExpansionFactor.LARGE;
 import static com.facebook.presto.array.Arrays.ExpansionOption.PRESERVE;
 import static com.facebook.presto.array.Arrays.ensureCapacity;
 import static com.facebook.presto.operator.UncheckedByteArrays.setByteUnchecked;
+import static com.google.common.base.MoreObjects.toStringHelper;
 import static io.airlift.slice.SizeOf.SIZE_OF_INT;
-import static io.airlift.slice.SizeOf.sizeOf;
+import static java.util.Objects.requireNonNull;
 
 public class ByteArrayBlockEncodingBuffer
         extends AbstractBlockEncodingBuffer
@@ -49,6 +52,12 @@ public class ByteArrayBlockEncodingBuffer
 
     private byte[] valuesBuffer;
     private int valuesBufferIndex;
+    private int estimatedValueBufferMaxCapacity;
+
+    public ByteArrayBlockEncodingBuffer(ArrayAllocator bufferAllocator, boolean isNested)
+    {
+        super(bufferAllocator, isNested);
+    }
 
     @Override
     public void accumulateSerializedRowSizes(int[] serializedRowSizes)
@@ -73,6 +82,7 @@ public class ByteArrayBlockEncodingBuffer
 
         appendValuesToBuffer();
         appendNulls();
+
         bufferedPositionCount += batchSize;
     }
 
@@ -95,16 +105,25 @@ public class ByteArrayBlockEncodingBuffer
     {
         bufferedPositionCount = 0;
         valuesBufferIndex = 0;
+        flushed = true;
         resetNullsBuffer();
+    }
+
+    @Override
+    public void noMoreBatches()
+    {
+        super.noMoreBatches();
+
+        if (flushed && valuesBuffer != null) {
+            bufferAllocator.returnArray(valuesBuffer);
+            valuesBuffer = null;
+        }
     }
 
     @Override
     public long getRetainedSizeInBytes()
     {
-        return INSTANCE_SIZE +
-                getPositionsRetainedSizeInBytes() +
-                sizeOf(valuesBuffer) +
-                getNullsBufferRetainedSizeInBytes();
+        return INSTANCE_SIZE;
     }
 
     @Override
@@ -116,9 +135,39 @@ public class ByteArrayBlockEncodingBuffer
                 getNullsBufferSerializedSizeInBytes();    // nulls buffer
     }
 
+    @Override
+    public String toString()
+    {
+        return toStringHelper(this)
+                .add("super", super.toString())
+                .add("estimatedValueBufferMaxCapacity", estimatedValueBufferMaxCapacity)
+                .add("valuesBufferCapacity", valuesBuffer == null ? 0 : valuesBuffer.length)
+                .add("valuesBufferIndex", valuesBufferIndex)
+                .toString();
+    }
+
+    @VisibleForTesting
+    @Override
+    int getEstimatedValueBufferMaxCapacity()
+    {
+        return estimatedValueBufferMaxCapacity;
+    }
+
+    @Override
+    protected void setupDecodedBlockAndMapPositions(DecodedBlockNode decodedBlockNode, int partitionBufferCapacity, double decodedBlockPageSizeFraction)
+    {
+        requireNonNull(decodedBlockNode, "decodedBlockNode is null");
+        decodedBlock = (Block) mapPositionsToNestedBlock(decodedBlockNode).getDecodedBlock();
+
+        double targetBufferSize = partitionBufferCapacity * decodedBlockPageSizeFraction;
+
+        setEstimatedNullsBufferMaxCapacity(getEstimatedBufferMaxCapacity(targetBufferSize, Byte.BYTES, POSITION_SIZE));
+        estimatedValueBufferMaxCapacity = getEstimatedBufferMaxCapacity(targetBufferSize, Byte.BYTES, POSITION_SIZE);
+    }
+
     private void appendValuesToBuffer()
     {
-        valuesBuffer = ensureCapacity(valuesBuffer, valuesBufferIndex + batchSize, LARGE, PRESERVE);
+        valuesBuffer = ensureCapacity(valuesBuffer, valuesBufferIndex + batchSize, estimatedValueBufferMaxCapacity, LARGE, PRESERVE, bufferAllocator);
 
         int[] positions = getPositions();
         if (decodedBlock.mayHaveNull()) {

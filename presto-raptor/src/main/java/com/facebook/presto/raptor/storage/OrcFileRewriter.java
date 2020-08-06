@@ -15,6 +15,12 @@ package com.facebook.presto.raptor.storage;
 
 import com.facebook.airlift.json.JsonCodec;
 import com.facebook.airlift.log.Logger;
+import com.facebook.presto.common.NotSupportedException;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeManager;
+import com.facebook.presto.common.type.TypeSignature;
 import com.facebook.presto.orc.OrcBatchRecordReader;
 import com.facebook.presto.orc.OrcDataSource;
 import com.facebook.presto.orc.OrcReader;
@@ -24,13 +30,10 @@ import com.facebook.presto.orc.OrcWriterStats;
 import com.facebook.presto.orc.StripeMetadataSource;
 import com.facebook.presto.orc.cache.OrcFileTailSource;
 import com.facebook.presto.orc.metadata.CompressionKind;
+import com.facebook.presto.raptor.RaptorOrcAggregatedMemoryContext;
 import com.facebook.presto.raptor.util.Closer;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.block.Block;
+import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.classloader.ThreadContextClassLoader;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeManager;
-import com.facebook.presto.spi.type.TypeSignature;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import org.apache.hadoop.fs.FileSystem;
@@ -42,11 +45,12 @@ import java.util.BitSet;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.TreeMap;
 import java.util.stream.IntStream;
 
 import static com.facebook.airlift.json.JsonCodec.jsonCodec;
-import static com.facebook.presto.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
+import static com.facebook.presto.orc.DwrfEncryptionProvider.NO_ENCRYPTION;
 import static com.facebook.presto.orc.OrcEncoding.ORC;
 import static com.facebook.presto.orc.OrcPredicate.TRUE;
 import static com.facebook.presto.orc.OrcReader.INITIAL_BATCH_SIZE;
@@ -55,6 +59,7 @@ import static com.facebook.presto.raptor.storage.OrcFileWriter.DEFAULT_OPTION;
 import static com.facebook.presto.raptor.storage.OrcStorageManager.DEFAULT_STORAGE_TIMEZONE;
 import static com.facebook.presto.raptor.storage.OrcStorageManager.HUGE_MAX_READ_BLOCK_SIZE;
 import static com.facebook.presto.raptor.util.Closer.closer;
+import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.airlift.units.Duration.nanosSince;
 import static java.lang.Math.toIntExact;
@@ -105,7 +110,10 @@ public final class OrcFileRewriter
                     ORC,
                     orcFileTailSource,
                     stripeMetadataSource,
-                    new OrcReaderOptions(readerAttributes.getMaxMergeDistance(), readerAttributes.getTinyStripeThreshold(), HUGE_MAX_READ_BLOCK_SIZE, readerAttributes.isZstdJniDecompressionEnabled()));
+                    new RaptorOrcAggregatedMemoryContext(),
+                    new OrcReaderOptions(readerAttributes.getMaxMergeDistance(), readerAttributes.getTinyStripeThreshold(), HUGE_MAX_READ_BLOCK_SIZE, readerAttributes.isZstdJniDecompressionEnabled()),
+                    false,
+                    NO_ENCRYPTION);
 
             if (reader.getFooter().getNumberOfRows() < rowsToDelete.length()) {
                 throw new IOException("File has fewer rows than deletion vector");
@@ -167,24 +175,37 @@ public final class OrcFileRewriter
 
             StorageTypeConverter storageTypeConverter = new StorageTypeConverter(typeManager);
 
-            try (Closer<OrcBatchRecordReader, IOException> recordReader = closer(reader.createBatchRecordReader(storageTypeConverter.toStorageTypes(readerColumns), TRUE, DEFAULT_STORAGE_TIMEZONE, newSimpleAggregatedMemoryContext(), INITIAL_BATCH_SIZE), OrcBatchRecordReader::close);
-                    Closer<OrcWriter, IOException> writer = closer(new OrcWriter(
-                            orcDataEnvironment.createOrcDataSink(fileSystem, output),
-                            writerColumnIds,
-                            writerStorageTypes,
-                            ORC,
-                            compression,
-                            DEFAULT_OPTION,
-                            userMetadata,
+            try (Closer<OrcBatchRecordReader, IOException> recordReader = closer(
+                    reader.createBatchRecordReader(
+                            storageTypeConverter.toStorageTypes(readerColumns),
+                            TRUE,
                             DEFAULT_STORAGE_TIMEZONE,
-                            validate,
-                            HASHED,
-                            stats),
+                            new RaptorOrcAggregatedMemoryContext(),
+                            INITIAL_BATCH_SIZE,
+                            ImmutableMap.of()),
+                    OrcBatchRecordReader::close);
+                    Closer<OrcWriter, IOException> writer = closer(new OrcWriter(
+                                    orcDataEnvironment.createOrcDataSink(fileSystem, output),
+                                    writerColumnIds,
+                                    writerStorageTypes,
+                                    ORC,
+                                    compression,
+                                    Optional.empty(),
+                                    NO_ENCRYPTION,
+                                    DEFAULT_OPTION,
+                                    userMetadata,
+                                    DEFAULT_STORAGE_TIMEZONE,
+                                    validate,
+                                    HASHED,
+                                    stats),
                             OrcWriter::close)) {
                 OrcFileInfo fileInfo = rewrite(recordReader.get(), writer.get(), rowsToDelete, writerColumnTypes, readerColumnIndexBuilder.build());
                 log.debug("Rewrote file %s in %s (input rows: %s, output rows: %s)", input.getName(), nanosSince(start), inputRowCount, inputRowCount - deleteRowCount);
                 return fileInfo;
             }
+        }
+        catch (NotSupportedException e) {
+            throw new PrestoException(NOT_SUPPORTED, e.getMessage(), e);
         }
     }
 

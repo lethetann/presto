@@ -44,6 +44,8 @@ public class BasicQueryStats
     private final Duration elapsedTime;
     private final Duration executionTime;
 
+    private final int peakRunningTasks;
+
     private final int totalDrivers;
     private final int queuedDrivers;
     private final int runningDrivers;
@@ -56,11 +58,15 @@ public class BasicQueryStats
     private final DataSize userMemoryReservation;
     private final DataSize totalMemoryReservation;
     private final DataSize peakUserMemoryReservation;
+    private final DataSize peakTotalMemoryReservation;
+    private final DataSize peakTaskTotalMemoryReservation;
     private final Duration totalCpuTime;
     private final Duration totalScheduledTime;
 
     private final boolean fullyBlocked;
     private final Set<BlockedReason> blockedReasons;
+
+    private final DataSize totalAllocation;
 
     private final OptionalDouble progressPercentage;
 
@@ -71,6 +77,7 @@ public class BasicQueryStats
             @JsonProperty("queuedTime") Duration queuedTime,
             @JsonProperty("elapsedTime") Duration elapsedTime,
             @JsonProperty("executionTime") Duration executionTime,
+            @JsonProperty("peakRunningTasks") int peakRunningTasks,
             @JsonProperty("totalDrivers") int totalDrivers,
             @JsonProperty("queuedDrivers") int queuedDrivers,
             @JsonProperty("runningDrivers") int runningDrivers,
@@ -81,10 +88,13 @@ public class BasicQueryStats
             @JsonProperty("userMemoryReservation") DataSize userMemoryReservation,
             @JsonProperty("totalMemoryReservation") DataSize totalMemoryReservation,
             @JsonProperty("peakUserMemoryReservation") DataSize peakUserMemoryReservation,
+            @JsonProperty("peakTotalMemoryReservation") DataSize peakTotalMemoryReservation,
+            @JsonProperty("peakTaskTotalMemoryReservation") DataSize peakTaskTotalMemoryReservation,
             @JsonProperty("totalCpuTime") Duration totalCpuTime,
             @JsonProperty("totalScheduledTime") Duration totalScheduledTime,
             @JsonProperty("fullyBlocked") boolean fullyBlocked,
             @JsonProperty("blockedReasons") Set<BlockedReason> blockedReasons,
+            @JsonProperty("totalAllocation") DataSize totalAllocation,
             @JsonProperty("progressPercentage") OptionalDouble progressPercentage)
     {
         this.createTime = createTime;
@@ -93,6 +103,8 @@ public class BasicQueryStats
         this.queuedTime = requireNonNull(queuedTime, "queuedTime is null");
         this.elapsedTime = requireNonNull(elapsedTime, "elapsedTime is null");
         this.executionTime = requireNonNull(executionTime, "executionTime is null");
+
+        this.peakRunningTasks = peakRunningTasks;
 
         checkArgument(totalDrivers >= 0, "totalDrivers is negative");
         this.totalDrivers = totalDrivers;
@@ -110,11 +122,15 @@ public class BasicQueryStats
         this.userMemoryReservation = userMemoryReservation;
         this.totalMemoryReservation = totalMemoryReservation;
         this.peakUserMemoryReservation = peakUserMemoryReservation;
+        this.peakTotalMemoryReservation = peakTotalMemoryReservation;
+        this.peakTaskTotalMemoryReservation = peakTaskTotalMemoryReservation;
         this.totalCpuTime = totalCpuTime;
         this.totalScheduledTime = totalScheduledTime;
 
         this.fullyBlocked = fullyBlocked;
         this.blockedReasons = ImmutableSet.copyOf(requireNonNull(blockedReasons, "blockedReasons is null"));
+
+        this.totalAllocation = requireNonNull(totalAllocation, "totalAllocation is null");
 
         this.progressPercentage = requireNonNull(progressPercentage, "progressPercentage is null");
     }
@@ -126,6 +142,7 @@ public class BasicQueryStats
                 queryStats.getQueuedTime(),
                 queryStats.getElapsedTime(),
                 queryStats.getExecutionTime(),
+                queryStats.getPeakRunningTasks(),
                 queryStats.getTotalDrivers(),
                 queryStats.getQueuedDrivers(),
                 queryStats.getRunningDrivers(),
@@ -136,10 +153,13 @@ public class BasicQueryStats
                 queryStats.getUserMemoryReservation(),
                 queryStats.getTotalMemoryReservation(),
                 queryStats.getPeakUserMemoryReservation(),
+                queryStats.getPeakTotalMemoryReservation(),
+                queryStats.getPeakTaskTotalMemory(),
                 queryStats.getTotalCpuTime(),
                 queryStats.getTotalScheduledTime(),
                 queryStats.isFullyBlocked(),
                 queryStats.getBlockedReasons(),
+                queryStats.getTotalAllocation(),
                 queryStats.getProgressPercentage());
     }
 
@@ -227,10 +247,27 @@ public class BasicQueryStats
         return totalMemoryReservation;
     }
 
+    public int getPeakRunningTasks()
+    {
+        return peakRunningTasks;
+    }
+
     @JsonProperty
     public DataSize getPeakUserMemoryReservation()
     {
         return peakUserMemoryReservation;
+    }
+
+    @JsonProperty
+    public DataSize getPeakTotalMemoryReservation()
+    {
+        return peakTotalMemoryReservation;
+    }
+
+    @JsonProperty
+    public DataSize getPeakTaskTotalMemoryReservation()
+    {
+        return peakTaskTotalMemoryReservation;
     }
 
     @JsonProperty
@@ -255,6 +292,12 @@ public class BasicQueryStats
     public Set<BlockedReason> getBlockedReasons()
     {
         return blockedReasons;
+    }
+
+    @JsonProperty
+    public DataSize getTotalAllocation()
+    {
+        return totalAllocation;
     }
 
     @JsonProperty

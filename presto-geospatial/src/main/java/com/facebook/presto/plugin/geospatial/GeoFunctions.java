@@ -15,51 +15,49 @@ package com.facebook.presto.plugin.geospatial;
 
 import com.esri.core.geometry.Envelope;
 import com.esri.core.geometry.GeometryCursor;
+import com.esri.core.geometry.GeometryException;
 import com.esri.core.geometry.ListeningGeometryCursor;
-import com.esri.core.geometry.MultiPath;
-import com.esri.core.geometry.MultiVertexGeometry;
-import com.esri.core.geometry.NonSimpleResult;
 import com.esri.core.geometry.NonSimpleResult.Reason;
-import com.esri.core.geometry.OperatorSimplifyOGC;
 import com.esri.core.geometry.OperatorUnion;
 import com.esri.core.geometry.Point;
-import com.esri.core.geometry.Polygon;
 import com.esri.core.geometry.Polyline;
 import com.esri.core.geometry.ogc.OGCConcreteGeometryCollection;
 import com.esri.core.geometry.ogc.OGCGeometry;
-import com.esri.core.geometry.ogc.OGCGeometryCollection;
 import com.esri.core.geometry.ogc.OGCLineString;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.IntegerType;
+import com.facebook.presto.common.type.KdbTreeType;
 import com.facebook.presto.geospatial.GeometryType;
 import com.facebook.presto.geospatial.KdbTree;
 import com.facebook.presto.geospatial.Rectangle;
 import com.facebook.presto.geospatial.serde.EsriGeometrySerde;
 import com.facebook.presto.geospatial.serde.GeometrySerializationType;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
 import com.facebook.presto.spi.function.Description;
 import com.facebook.presto.spi.function.ScalarFunction;
 import com.facebook.presto.spi.function.SqlNullable;
 import com.facebook.presto.spi.function.SqlType;
-import com.facebook.presto.spi.type.IntegerType;
 import com.google.common.base.Joiner;
-import com.google.common.base.VerifyException;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Streams;
 import io.airlift.slice.BasicSliceInput;
 import io.airlift.slice.Slice;
+import io.airlift.slice.Slices;
+import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.CoordinateSequence;
 import org.locationtech.jts.geom.Geometry;
 import org.locationtech.jts.geom.GeometryCollection;
+import org.locationtech.jts.geom.GeometryFactory;
 import org.locationtech.jts.geom.LineString;
 import org.locationtech.jts.geom.MultiLineString;
+import org.locationtech.jts.geom.TopologyException;
 import org.locationtech.jts.geom.impl.PackedCoordinateSequenceFactory;
 import org.locationtech.jts.linearref.LengthIndexedLine;
 
-import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Deque;
 import java.util.EnumSet;
 import java.util.Iterator;
 import java.util.List;
@@ -68,7 +66,6 @@ import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.Set;
 
-import static com.esri.core.geometry.Geometry.Type;
 import static com.esri.core.geometry.NonSimpleResult.Reason.Clustering;
 import static com.esri.core.geometry.NonSimpleResult.Reason.Cracking;
 import static com.esri.core.geometry.NonSimpleResult.Reason.CrossOver;
@@ -77,6 +74,13 @@ import static com.esri.core.geometry.NonSimpleResult.Reason.OGCDisconnectedInter
 import static com.esri.core.geometry.NonSimpleResult.Reason.OGCPolygonSelfTangency;
 import static com.esri.core.geometry.NonSimpleResult.Reason.OGCPolylineSelfTangency;
 import static com.esri.core.geometry.ogc.OGCGeometry.createFromEsriGeometry;
+import static com.facebook.presto.common.type.StandardTypes.BIGINT;
+import static com.facebook.presto.common.type.StandardTypes.BOOLEAN;
+import static com.facebook.presto.common.type.StandardTypes.DOUBLE;
+import static com.facebook.presto.common.type.StandardTypes.INTEGER;
+import static com.facebook.presto.common.type.StandardTypes.TINYINT;
+import static com.facebook.presto.common.type.StandardTypes.VARBINARY;
+import static com.facebook.presto.common.type.StandardTypes.VARCHAR;
 import static com.facebook.presto.geospatial.GeometryType.LINE_STRING;
 import static com.facebook.presto.geospatial.GeometryType.MULTI_LINE_STRING;
 import static com.facebook.presto.geospatial.GeometryType.MULTI_POINT;
@@ -89,6 +93,8 @@ import static com.facebook.presto.geospatial.GeometryUtils.createJtsEmptyPolygon
 import static com.facebook.presto.geospatial.GeometryUtils.createJtsLineString;
 import static com.facebook.presto.geospatial.GeometryUtils.createJtsMultiPoint;
 import static com.facebook.presto.geospatial.GeometryUtils.createJtsPoint;
+import static com.facebook.presto.geospatial.GeometryUtils.flattenCollection;
+import static com.facebook.presto.geospatial.GeometryUtils.getGeometryInvalidReason;
 import static com.facebook.presto.geospatial.GeometryUtils.getPointCount;
 import static com.facebook.presto.geospatial.GeometryUtils.jtsGeometryFromWkt;
 import static com.facebook.presto.geospatial.GeometryUtils.wktFromJtsGeometry;
@@ -98,28 +104,14 @@ import static com.facebook.presto.geospatial.serde.JtsGeometrySerde.deserialize;
 import static com.facebook.presto.geospatial.serde.JtsGeometrySerde.serialize;
 import static com.facebook.presto.plugin.geospatial.GeometryType.GEOMETRY;
 import static com.facebook.presto.plugin.geospatial.GeometryType.GEOMETRY_TYPE_NAME;
-import static com.facebook.presto.plugin.geospatial.SphericalGeographyType.SPHERICAL_GEOGRAPHY_TYPE_NAME;
 import static com.facebook.presto.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
-import static com.facebook.presto.spi.type.StandardTypes.BIGINT;
-import static com.facebook.presto.spi.type.StandardTypes.BOOLEAN;
-import static com.facebook.presto.spi.type.StandardTypes.DOUBLE;
-import static com.facebook.presto.spi.type.StandardTypes.INTEGER;
-import static com.facebook.presto.spi.type.StandardTypes.TINYINT;
-import static com.facebook.presto.spi.type.StandardTypes.VARBINARY;
-import static com.facebook.presto.spi.type.StandardTypes.VARCHAR;
 import static com.google.common.base.Preconditions.checkArgument;
-import static com.google.common.base.Preconditions.checkState;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.airlift.slice.Slices.utf8Slice;
 import static io.airlift.slice.Slices.wrappedBuffer;
 import static java.lang.Double.isInfinite;
 import static java.lang.Double.isNaN;
-import static java.lang.Math.PI;
-import static java.lang.Math.atan2;
-import static java.lang.Math.cos;
-import static java.lang.Math.sin;
-import static java.lang.Math.sqrt;
 import static java.lang.Math.toIntExact;
-import static java.lang.Math.toRadians;
 import static java.lang.String.format;
 import static java.util.Arrays.setAll;
 import static java.util.Objects.requireNonNull;
@@ -129,8 +121,6 @@ public final class GeoFunctions
 {
     private static final Joiner OR_JOINER = Joiner.on(" or ");
     private static final Slice EMPTY_POLYGON = serialize(createJtsEmptyPolygon());
-    private static final double EARTH_RADIUS_KM = 6371.01;
-    private static final double EARTH_RADIUS_M = EARTH_RADIUS_KM * 1000.0;
     private static final Map<Reason, String> NON_SIMPLE_REASONS = ImmutableMap.<Reason, String>builder()
             .put(DegenerateSegments, "Degenerate segments")
             .put(Clustering, "Repeated points")
@@ -142,14 +132,6 @@ public final class GeoFunctions
             .build();
     private static final int NUMBER_OF_DIMENSIONS = 3;
     private static final Block EMPTY_ARRAY_OF_INTS = IntegerType.INTEGER.createFixedSizeBlockBuilder(0).build();
-
-    private static final float MIN_LATITUDE = -90;
-    private static final float MAX_LATITUDE = 90;
-    private static final float MIN_LONGITUDE = -180;
-    private static final float MAX_LONGITUDE = 180;
-
-    private static final EnumSet<Type> GEOMETRY_TYPES_FOR_SPHERICAL_GEOGRAPHY = EnumSet.of(
-            Type.Point, Type.Polyline, Type.Polygon, Type.MultiPoint);
 
     private GeoFunctions() {}
 
@@ -269,48 +251,6 @@ public final class GeoFunctions
         return EsriGeometrySerde.serialize(geomFromBinary(input));
     }
 
-    @Description("Converts a Geometry object to a SphericalGeography object")
-    @ScalarFunction("to_spherical_geography")
-    @SqlType(SPHERICAL_GEOGRAPHY_TYPE_NAME)
-    public static Slice toSphericalGeography(@SqlType(GEOMETRY_TYPE_NAME) Slice input)
-    {
-        // "every point in input is in range" <=> "the envelope of input is in range"
-        Envelope envelope = deserializeEnvelope(input);
-        if (!envelope.isEmpty()) {
-            checkLatitude(envelope.getYMin());
-            checkLatitude(envelope.getYMax());
-            checkLongitude(envelope.getXMin());
-            checkLongitude(envelope.getXMax());
-        }
-        OGCGeometry geometry = EsriGeometrySerde.deserialize(input);
-        if (geometry.is3D()) {
-            throw new PrestoException(INVALID_FUNCTION_ARGUMENT, "Cannot convert 3D geometry to a spherical geography");
-        }
-
-        GeometryCursor cursor = geometry.getEsriGeometryCursor();
-        while (true) {
-            com.esri.core.geometry.Geometry subGeometry = cursor.next();
-            if (subGeometry == null) {
-                break;
-            }
-
-            if (!GEOMETRY_TYPES_FOR_SPHERICAL_GEOGRAPHY.contains(subGeometry.getType())) {
-                throw new PrestoException(INVALID_FUNCTION_ARGUMENT, "Cannot convert geometry of this type to spherical geography: " + subGeometry.getType());
-            }
-        }
-
-        return input;
-    }
-
-    @Description("Converts a SphericalGeography object to a Geometry object.")
-    @ScalarFunction("to_geometry")
-    @SqlType(GEOMETRY_TYPE_NAME)
-    public static Slice toGeometry(@SqlType(SPHERICAL_GEOGRAPHY_TYPE_NAME) Slice input)
-    {
-        // Every SphericalGeography object is a valid geometry object
-        return input;
-    }
-
     @Description("Returns the Well-Known Text (WKT) representation of the geometry")
     @ScalarFunction("ST_AsText")
     @SqlType(VARCHAR)
@@ -324,7 +264,12 @@ public final class GeoFunctions
     @SqlType(VARBINARY)
     public static Slice stAsBinary(@SqlType(GEOMETRY_TYPE_NAME) Slice input)
     {
-        return wrappedBuffer(EsriGeometrySerde.deserialize(input).asBinary());
+        try {
+            return wrappedBuffer(EsriGeometrySerde.deserialize(input).asBinary());
+        }
+        catch (GeometryException e) {
+            throw new PrestoException(INVALID_FUNCTION_ARGUMENT, "Invalid geometry: " + e.getMessage(), e);
+        }
     }
 
     @SqlNullable
@@ -345,11 +290,11 @@ public final class GeoFunctions
             return input;
         }
 
-        OGCGeometry geometry = EsriGeometrySerde.deserialize(input);
+        Geometry geometry = deserialize(input);
         if (geometry.isEmpty()) {
             return null;
         }
-        return EsriGeometrySerde.serialize(geometry.buffer(distance));
+        return serialize(geometry.buffer(distance));
     }
 
     @Description("Returns the Point value that is the mathematical centroid of a Geometry")
@@ -434,8 +379,15 @@ public final class GeoFunctions
     @SqlType(BOOLEAN)
     public static boolean stIsSimple(@SqlType(GEOMETRY_TYPE_NAME) Slice input)
     {
-        OGCGeometry geometry = EsriGeometrySerde.deserialize(input);
-        return geometry.isEmpty() || geometry.isSimple();
+        try {
+            return deserialize(input).isSimple();
+        }
+        catch (PrestoException e) {
+            if (e.getCause() instanceof TopologyException) {
+                return false;
+            }
+            throw e;
+        }
     }
 
     @Description("Returns true if the input geometry is well formed")
@@ -443,16 +395,14 @@ public final class GeoFunctions
     @SqlType(BOOLEAN)
     public static boolean stIsValid(@SqlType(GEOMETRY_TYPE_NAME) Slice input)
     {
-        GeometryCursor cursor = EsriGeometrySerde.deserialize(input).getEsriGeometryCursor();
-        while (true) {
-            com.esri.core.geometry.Geometry geometry = cursor.next();
-            if (geometry == null) {
-                return true;
-            }
-
-            if (!OperatorSimplifyOGC.local().isSimpleOGC(geometry, null, true, null, null)) {
+        try {
+            return deserialize(input).isValid();
+        }
+        catch (PrestoException e) {
+            if (e.getCause() instanceof TopologyException) {
                 return false;
             }
+            throw e;
         }
     }
 
@@ -462,35 +412,15 @@ public final class GeoFunctions
     @SqlNullable
     public static Slice invalidReason(@SqlType(GEOMETRY_TYPE_NAME) Slice input)
     {
-        GeometryCursor cursor = EsriGeometrySerde.deserialize(input).getEsriGeometryCursor();
-        NonSimpleResult result = new NonSimpleResult();
-        while (true) {
-            com.esri.core.geometry.Geometry geometry = cursor.next();
-            if (geometry == null) {
-                return null;
+        try {
+            Geometry geometry = deserialize(input);
+            return getGeometryInvalidReason(geometry).map(Slices::utf8Slice).orElse(null);
+        }
+        catch (PrestoException e) {
+            if (e.getCause() instanceof TopologyException) {
+                return utf8Slice(e.getMessage());
             }
-
-            if (!OperatorSimplifyOGC.local().isSimpleOGC(geometry, null, true, result, null)) {
-                String reasonText = NON_SIMPLE_REASONS.getOrDefault(result.m_reason, result.m_reason.name());
-
-                if (!(geometry instanceof MultiVertexGeometry)) {
-                    return utf8Slice(reasonText);
-                }
-
-                MultiVertexGeometry multiVertexGeometry = (MultiVertexGeometry) geometry;
-                if (result.m_vertexIndex1 >= 0 && result.m_vertexIndex2 >= 0) {
-                    Point point1 = multiVertexGeometry.getPoint(result.m_vertexIndex1);
-                    Point point2 = multiVertexGeometry.getPoint(result.m_vertexIndex2);
-                    return utf8Slice(format("%s at or near (%s %s) and (%s %s)", reasonText, point1.getX(), point1.getY(), point2.getX(), point2.getY()));
-                }
-
-                if (result.m_vertexIndex1 >= 0) {
-                    Point point = multiVertexGeometry.getPoint(result.m_vertexIndex1);
-                    return utf8Slice(format("%s at or near (%s %s)", reasonText, point.getX(), point.getY()));
-                }
-
-                return utf8Slice(reasonText);
-            }
+            throw e;
         }
     }
 
@@ -861,22 +791,42 @@ public final class GeoFunctions
     }
 
     @SqlNullable
-    @Description("Returns an array of points in a linestring")
+    @Description("Returns an array of points in a geometry")
     @ScalarFunction("ST_Points")
     @SqlType("array(" + GEOMETRY_TYPE_NAME + ")")
     public static Block stPoints(@SqlType(GEOMETRY_TYPE_NAME) Slice input)
     {
         Geometry geometry = deserialize(input);
-        validateType("ST_Points", geometry, EnumSet.of(LINE_STRING));
         if (geometry.isEmpty()) {
             return null;
         }
-        LineString lineString = (LineString) geometry;
-        BlockBuilder blockBuilder = GEOMETRY.createBlockBuilder(null, lineString.getNumPoints());
-        for (int i = 0; i < lineString.getNumPoints(); i++) {
-            GEOMETRY.writeSlice(blockBuilder, serialize(lineString.getPointN(i)));
-        }
+
+        BlockBuilder blockBuilder = GEOMETRY.createBlockBuilder(null, geometry.getNumPoints());
+        buildPointsBlock(geometry, blockBuilder);
+
         return blockBuilder.build();
+    }
+
+    private static void buildPointsBlock(Geometry geometry, BlockBuilder blockBuilder)
+    {
+        GeometryType type = GeometryType.getForJtsGeometryType(geometry.getGeometryType());
+        if (type == GeometryType.POINT) {
+            GEOMETRY.writeSlice(blockBuilder, serialize(geometry));
+        }
+        else if (type == GeometryType.GEOMETRY_COLLECTION) {
+            GeometryCollection collection = (GeometryCollection) geometry;
+            for (int i = 0; i < collection.getNumGeometries(); i++) {
+                Geometry entry = collection.getGeometryN(i);
+                buildPointsBlock(entry, blockBuilder);
+            }
+        }
+        else {
+            GeometryFactory geometryFactory = geometry.getFactory();
+            Coordinate[] vertices = geometry.getCoordinates();
+            for (Coordinate coordinate : vertices) {
+                GEOMETRY.writeSlice(blockBuilder, serialize(geometryFactory.createPoint(coordinate)));
+            }
+        }
     }
 
     @SqlNullable
@@ -1011,7 +961,10 @@ public final class GeoFunctions
     @SqlType(GEOMETRY_TYPE_NAME)
     public static Slice stIntersection(@SqlType(GEOMETRY_TYPE_NAME) Slice left, @SqlType(GEOMETRY_TYPE_NAME) Slice right)
     {
-        if (deserializeType(left) == GeometrySerializationType.ENVELOPE && deserializeType(right) == GeometrySerializationType.ENVELOPE) {
+        GeometrySerializationType leftType = deserializeType(left);
+        GeometrySerializationType rightType = deserializeType(right);
+
+        if (leftType == GeometrySerializationType.ENVELOPE && rightType == GeometrySerializationType.ENVELOPE) {
             Envelope leftEnvelope = deserializeEnvelope(left);
             Envelope rightEnvelope = deserializeEnvelope(right);
 
@@ -1033,6 +986,17 @@ public final class GeoFunctions
             }
 
             return EsriGeometrySerde.serialize(intersection);
+        }
+
+        // If one side is an envelope, then if it contains the other's envelope we can just return the other geometry.
+        if (leftType == GeometrySerializationType.ENVELOPE
+                && deserializeEnvelope(left).contains(deserializeEnvelope(right))) {
+            return right;
+        }
+
+        if (rightType == GeometrySerializationType.ENVELOPE
+                && deserializeEnvelope(right).contains(deserializeEnvelope(left))) {
+            return left;
         }
 
         OGCGeometry leftGeometry = EsriGeometrySerde.deserialize(left);
@@ -1189,6 +1153,21 @@ public final class GeoFunctions
         return EsriGeometrySerde.getGeometryType(input).standardName();
     }
 
+    @Description("Recursively flattens GeometryCollections")
+    @ScalarFunction("flatten_geometry_collections")
+    @SqlType("array(" + GEOMETRY_TYPE_NAME + ")")
+    public static Block flattenGeometryCollections(@SqlType(GEOMETRY_TYPE_NAME) Slice input)
+    {
+        OGCGeometry geometry = EsriGeometrySerde.deserialize(input);
+        List<OGCGeometry> components = Streams.stream(
+                flattenCollection(geometry)).collect(toImmutableList());
+        BlockBuilder blockBuilder = GEOMETRY.createBlockBuilder(null, components.size());
+        for (OGCGeometry component : components) {
+            GEOMETRY.writeSlice(blockBuilder, EsriGeometrySerde.serialize(component));
+        }
+        return blockBuilder.build();
+    }
+
     @ScalarFunction
     @SqlNullable
     @Description("Returns an array of spatial partition IDs for a given geometry")
@@ -1231,27 +1210,12 @@ public final class GeoFunctions
         return spatialPartitions((KdbTree) kdbTree, expandedEnvelope2D);
     }
 
-    private static Block spatialPartitions(KdbTree kdbTree, Rectangle envelope)
+    // Package visible for SphericalGeoFunctions
+    /*package*/ static Block spatialPartitions(KdbTree kdbTree, Rectangle envelope)
     {
         Map<Integer, Rectangle> partitions = kdbTree.findIntersectingLeaves(envelope);
         if (partitions.isEmpty()) {
             return EMPTY_ARRAY_OF_INTS;
-        }
-
-        // For input rectangles that represent a single point, return at most one partition
-        // by excluding right and upper sides of partition rectangles. The logic that builds
-        // KDB tree needs to make sure to add some padding to the right and upper sides of the
-        // overall extent of the tree to avoid missing right-most and top-most points.
-        boolean point = (envelope.getWidth() == 0 && envelope.getHeight() == 0);
-        if (point) {
-            for (Map.Entry<Integer, Rectangle> partition : partitions.entrySet()) {
-                if (envelope.getXMin() < partition.getValue().getXMax() && envelope.getYMin() < partition.getValue().getYMax()) {
-                    BlockBuilder blockBuilder = IntegerType.INTEGER.createFixedSizeBlockBuilder(1);
-                    blockBuilder.writeInt(partition.getKey());
-                    return blockBuilder.build();
-                }
-            }
-            throw new VerifyException(format("Cannot find half-open partition extent for a point: (%s, %s)", envelope.getXMin(), envelope.getYMin()));
         }
 
         BlockBuilder blockBuilder = IntegerType.INTEGER.createFixedSizeBlockBuilder(partitions.size());
@@ -1260,51 +1224,6 @@ public final class GeoFunctions
         }
 
         return blockBuilder.build();
-    }
-
-    @ScalarFunction
-    @Description("Calculates the great-circle distance between two points on the Earth's surface in kilometers")
-    @SqlType(DOUBLE)
-    public static double greatCircleDistance(
-            @SqlType(DOUBLE) double latitude1,
-            @SqlType(DOUBLE) double longitude1,
-            @SqlType(DOUBLE) double latitude2,
-            @SqlType(DOUBLE) double longitude2)
-    {
-        checkLatitude(latitude1);
-        checkLongitude(longitude1);
-        checkLatitude(latitude2);
-        checkLongitude(longitude2);
-
-        double radianLatitude1 = toRadians(latitude1);
-        double radianLatitude2 = toRadians(latitude2);
-
-        double sin1 = sin(radianLatitude1);
-        double cos1 = cos(radianLatitude1);
-        double sin2 = sin(radianLatitude2);
-        double cos2 = cos(radianLatitude2);
-
-        double deltaLongitude = toRadians(longitude1) - toRadians(longitude2);
-        double cosDeltaLongitude = cos(deltaLongitude);
-
-        double t1 = cos2 * sin(deltaLongitude);
-        double t2 = cos1 * sin2 - sin1 * cos2 * cosDeltaLongitude;
-        double t3 = sin1 * sin2 + cos1 * cos2 * cosDeltaLongitude;
-        return atan2(sqrt(t1 * t1 + t2 * t2), t3) * EARTH_RADIUS_KM;
-    }
-
-    private static void checkLatitude(double latitude)
-    {
-        if (Double.isNaN(latitude) || Double.isInfinite(latitude) || latitude < MIN_LATITUDE || latitude > MAX_LATITUDE) {
-            throw new PrestoException(INVALID_FUNCTION_ARGUMENT, "Latitude must be between -90 and 90");
-        }
-    }
-
-    private static void checkLongitude(double longitude)
-    {
-        if (Double.isNaN(longitude) || Double.isInfinite(longitude) || longitude < MIN_LONGITUDE || longitude > MAX_LONGITUDE) {
-            throw new PrestoException(INVALID_FUNCTION_ARGUMENT, "Longitude must be between -180 and 180");
-        }
     }
 
     private static OGCGeometry geomFromBinary(Slice input)
@@ -1356,232 +1275,6 @@ public final class GeoFunctions
     {
         boolean apply(Envelope left, Envelope right);
     }
-
-    @SqlNullable
-    @Description("Returns the great-circle distance in meters between two SphericalGeography points.")
-    @ScalarFunction("ST_Distance")
-    @SqlType(DOUBLE)
-    public static Double stSphericalDistance(@SqlType(SPHERICAL_GEOGRAPHY_TYPE_NAME) Slice left, @SqlType(SPHERICAL_GEOGRAPHY_TYPE_NAME) Slice right)
-    {
-        OGCGeometry leftGeometry = EsriGeometrySerde.deserialize(left);
-        OGCGeometry rightGeometry = EsriGeometrySerde.deserialize(right);
-        if (leftGeometry.isEmpty() || rightGeometry.isEmpty()) {
-            return null;
-        }
-
-        // TODO: support more SphericalGeography types.
-        validateSphericalType("ST_Distance", leftGeometry, EnumSet.of(POINT));
-        validateSphericalType("ST_Distance", rightGeometry, EnumSet.of(POINT));
-        Point leftPoint = (Point) leftGeometry.getEsriGeometry();
-        Point rightPoint = (Point) rightGeometry.getEsriGeometry();
-
-        // greatCircleDistance returns distance in KM.
-        return greatCircleDistance(leftPoint.getY(), leftPoint.getX(), rightPoint.getY(), rightPoint.getX()) * 1000;
-    }
-
-    private static void validateSphericalType(String function, OGCGeometry geometry, Set<GeometryType> validTypes)
-    {
-        GeometryType type = GeometryType.getForEsriGeometryType(geometry.geometryType());
-        if (!validTypes.contains(type)) {
-            throw new PrestoException(INVALID_FUNCTION_ARGUMENT, format("When applied to SphericalGeography inputs, %s only supports %s. Input type is: %s", function, OR_JOINER.join(validTypes), type));
-        }
-    }
-
-    @SqlNullable
-    @Description("Returns the area of a geometry on the Earth's surface using spherical model")
-    @ScalarFunction("ST_Area")
-    @SqlType(DOUBLE)
-    public static Double stSphericalArea(@SqlType(SPHERICAL_GEOGRAPHY_TYPE_NAME) Slice input)
-    {
-        OGCGeometry geometry = EsriGeometrySerde.deserialize(input);
-        if (geometry.isEmpty()) {
-            return null;
-        }
-
-        validateSphericalType("ST_Area", geometry, EnumSet.of(POLYGON, MULTI_POLYGON));
-
-        Polygon polygon = (Polygon) geometry.getEsriGeometry();
-
-        // See https://www.movable-type.co.uk/scripts/latlong.html
-        // and http://osgeo-org.1560.x6.nabble.com/Area-of-a-spherical-polygon-td3841625.html
-        // and https://www.element84.com/blog/determining-if-a-spherical-polygon-contains-a-pole
-        // for the underlying Maths
-
-        double sphericalExcess = 0.0;
-
-        int numPaths = polygon.getPathCount();
-        for (int i = 0; i < numPaths; i++) {
-            double sign = polygon.isExteriorRing(i) ? 1.0 : -1.0;
-            sphericalExcess += sign * Math.abs(computeSphericalExcess(polygon, polygon.getPathStart(i), polygon.getPathEnd(i)));
-        }
-
-        // Math.abs is required here because for Polygons with a 2D area of 0
-        // isExteriorRing returns false for the exterior ring
-        return Math.abs(sphericalExcess * EARTH_RADIUS_M * EARTH_RADIUS_M);
-    }
-
-    @SqlNullable
-    @Description("Returns the great-circle length in meters of a linestring or multi-linestring on Earth's surface")
-    @ScalarFunction("ST_Length")
-    @SqlType(DOUBLE)
-    public static Double stSphericalLength(@SqlType(SPHERICAL_GEOGRAPHY_TYPE_NAME) Slice input)
-    {
-        OGCGeometry geometry = EsriGeometrySerde.deserialize(input);
-        if (geometry.isEmpty()) {
-            return null;
-        }
-
-        validateSphericalType("ST_Length", geometry, EnumSet.of(LINE_STRING, MULTI_LINE_STRING));
-        MultiPath lineString = (MultiPath) geometry.getEsriGeometry();
-
-        double sum = 0;
-
-        // sum up paths on (multi)linestring
-        for (int path = 0; path < lineString.getPathCount(); path++) {
-            if (lineString.getPathSize(path) < 2) {
-                continue;
-            }
-
-            // sum up distances between adjacent points on this path
-            int pathStart = lineString.getPathStart(path);
-            Point prev = lineString.getPoint(pathStart);
-            for (int i = pathStart + 1; i < lineString.getPathEnd(path); i++) {
-                Point next = lineString.getPoint(i);
-                sum += greatCircleDistance(prev.getY(), prev.getX(), next.getY(), next.getX());
-                prev = next;
-            }
-        }
-
-        return sum * 1000;
-    }
-
-    private static double computeSphericalExcess(Polygon polygon, int start, int end)
-    {
-        // Our calculations rely on not processing the same point twice
-        if (polygon.getPoint(end - 1).equals(polygon.getPoint(start))) {
-            end = end - 1;
-        }
-
-        if (end - start < 3) {
-            // A path with less than 3 distinct points is not valid for calculating an area
-            throw new PrestoException(INVALID_FUNCTION_ARGUMENT, "Polygon is not valid: a loop contains less then 3 vertices.");
-        }
-
-        Point point = new Point();
-
-        // Initialize the calculator with the last point
-        polygon.getPoint(end - 1, point);
-        SphericalExcessCalculator calculator = new SphericalExcessCalculator(point);
-
-        for (int i = start; i < end; i++) {
-            polygon.getPoint(i, point);
-            calculator.add(point);
-        }
-
-        return calculator.computeSphericalExcess();
-    }
-
-    private static class SphericalExcessCalculator
-    {
-        private static final double TWO_PI = 2 * Math.PI;
-        private static final double THREE_PI = 3 * Math.PI;
-
-        private double sphericalExcess;
-        private double courseDelta;
-
-        private boolean firstPoint;
-        private double firstInitialBearing;
-        private double previousFinalBearing;
-
-        private double previousPhi;
-        private double previousCos;
-        private double previousSin;
-        private double previousTan;
-        private double previousLongitude;
-
-        private boolean done;
-
-        public SphericalExcessCalculator(Point endPoint)
-        {
-            previousPhi = toRadians(endPoint.getY());
-            previousSin = Math.sin(previousPhi);
-            previousCos = Math.cos(previousPhi);
-            previousTan = Math.tan(previousPhi / 2);
-            previousLongitude = toRadians(endPoint.getX());
-            firstPoint = true;
-        }
-
-        private void add(Point point) throws IllegalStateException
-        {
-            checkState(!done, "Computation of spherical excess is complete");
-
-            double phi = toRadians(point.getY());
-            double tan = Math.tan(phi / 2);
-            double longitude = toRadians(point.getX());
-
-            // We need to check for that specifically
-            // Otherwise calculating the bearing is not deterministic
-            if (longitude == previousLongitude && phi == previousPhi) {
-                throw new PrestoException(INVALID_FUNCTION_ARGUMENT, "Polygon is not valid: it has two identical consecutive vertices");
-            }
-
-            double deltaLongitude = longitude - previousLongitude;
-            sphericalExcess += 2 * Math.atan2(Math.tan(deltaLongitude / 2) * (previousTan + tan), 1 + previousTan * tan);
-
-            double cos = Math.cos(phi);
-            double sin = Math.sin(phi);
-            double sinOfDeltaLongitude = Math.sin(deltaLongitude);
-            double cosOfDeltaLongitude = Math.cos(deltaLongitude);
-
-            // Initial bearing from previous to current
-            double y = sinOfDeltaLongitude * cos;
-            double x = previousCos * sin - previousSin * cos * cosOfDeltaLongitude;
-            double initialBearing = (Math.atan2(y, x) + TWO_PI) % TWO_PI;
-
-            // Final bearing from previous to current = opposite of bearing from current to previous
-            double finalY = -sinOfDeltaLongitude * previousCos;
-            double finalX = previousSin * cos - previousCos * sin * cosOfDeltaLongitude;
-            double finalBearing = (Math.atan2(finalY, finalX) + PI) % TWO_PI;
-
-            // When processing our first point we don't yet have a previousFinalBearing
-            if (firstPoint) {
-                // So keep our initial bearing around, and we'll use it at the end
-                // with the last final bearing
-                firstInitialBearing = initialBearing;
-                firstPoint = false;
-            }
-            else {
-                courseDelta += (initialBearing - previousFinalBearing + THREE_PI) % TWO_PI - PI;
-            }
-
-            courseDelta += (finalBearing - initialBearing + THREE_PI) % TWO_PI - PI;
-
-            previousFinalBearing = finalBearing;
-            previousCos = cos;
-            previousSin = sin;
-            previousPhi = phi;
-            previousTan = tan;
-            previousLongitude = longitude;
-        }
-
-        public double computeSphericalExcess()
-        {
-            if (!done) {
-                // Now that we have our last final bearing, we can calculate the remaining course delta
-                courseDelta += (firstInitialBearing - previousFinalBearing + THREE_PI) % TWO_PI - PI;
-
-                // The courseDelta should be 2Pi or - 2Pi, unless a pole is enclosed (and then it should be ~ 0)
-                // In which case we need to correct the spherical excess by 2Pi
-                if (Math.abs(courseDelta) < PI / 4) {
-                    sphericalExcess = Math.abs(sphericalExcess) - TWO_PI;
-                }
-                done = true;
-            }
-
-            return sphericalExcess;
-        }
-    }
-
     private static Iterable<Slice> getGeometrySlicesFromBlock(Block block)
     {
         requireNonNull(block, "block is null");
@@ -1604,54 +1297,5 @@ public final class GeoFunctions
                 return GEOMETRY.getSlice(block, iteratorPosition++);
             }
         };
-    }
-
-    private static Iterable<OGCGeometry> flattenCollection(OGCGeometry geometry)
-    {
-        if (geometry == null) {
-            return ImmutableList.of();
-        }
-        if (!(geometry instanceof OGCConcreteGeometryCollection)) {
-            return ImmutableList.of(geometry);
-        }
-        if (((OGCConcreteGeometryCollection) geometry).numGeometries() == 0) {
-            return ImmutableList.of();
-        }
-        return () -> new GeometryCollectionIterator(geometry);
-    }
-
-    private static class GeometryCollectionIterator
-            implements Iterator<OGCGeometry>
-    {
-        private final Deque<OGCGeometry> geometriesDeque = new ArrayDeque<>();
-
-        GeometryCollectionIterator(OGCGeometry geometries)
-        {
-            geometriesDeque.push(requireNonNull(geometries, "geometries is null"));
-        }
-
-        @Override
-        public boolean hasNext()
-        {
-            if (geometriesDeque.isEmpty()) {
-                return false;
-            }
-            while (geometriesDeque.peek() instanceof OGCConcreteGeometryCollection) {
-                OGCGeometryCollection collection = (OGCGeometryCollection) geometriesDeque.pop();
-                for (int i = 0; i < collection.numGeometries(); i++) {
-                    geometriesDeque.push(collection.geometryN(i));
-                }
-            }
-            return !geometriesDeque.isEmpty();
-        }
-
-        @Override
-        public OGCGeometry next()
-        {
-            if (!hasNext()) {
-                throw new NoSuchElementException("Geometries have been consumed");
-            }
-            return geometriesDeque.pop();
-        }
     }
 }

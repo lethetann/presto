@@ -13,12 +13,18 @@
  */
 package com.facebook.presto.orc.reader;
 
-import com.facebook.presto.memory.context.AggregatedMemoryContext;
-import com.facebook.presto.memory.context.LocalMemoryContext;
+import com.facebook.presto.common.Subfield;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockLease;
+import com.facebook.presto.common.block.ClosingBlockLease;
+import com.facebook.presto.common.block.RunLengthEncodedBlock;
+import com.facebook.presto.common.type.MapType;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.orc.OrcAggregatedMemoryContext;
+import com.facebook.presto.orc.OrcLocalMemoryContext;
 import com.facebook.presto.orc.StreamDescriptor;
 import com.facebook.presto.orc.TupleDomainFilter;
 import com.facebook.presto.orc.TupleDomainFilter.BigintRange;
-import com.facebook.presto.orc.TupleDomainFilter.BigintValues;
 import com.facebook.presto.orc.TupleDomainFilter.BytesRange;
 import com.facebook.presto.orc.TupleDomainFilter.BytesValues;
 import com.facebook.presto.orc.metadata.ColumnEncoding;
@@ -27,13 +33,6 @@ import com.facebook.presto.orc.stream.BooleanInputStream;
 import com.facebook.presto.orc.stream.InputStreamSource;
 import com.facebook.presto.orc.stream.InputStreamSources;
 import com.facebook.presto.orc.stream.LongInputStream;
-import com.facebook.presto.spi.Subfield;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockLease;
-import com.facebook.presto.spi.block.ClosingBlockLease;
-import com.facebook.presto.spi.block.RunLengthEncodedBlock;
-import com.facebook.presto.spi.type.MapType;
-import com.facebook.presto.spi.type.Type;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
@@ -48,9 +47,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
-import static com.facebook.presto.array.Arrays.ensureCapacity;
 import static com.facebook.presto.orc.TupleDomainFilter.IS_NOT_NULL;
 import static com.facebook.presto.orc.TupleDomainFilter.IS_NULL;
+import static com.facebook.presto.orc.TupleDomainFilterUtils.toBigintValues;
+import static com.facebook.presto.orc.array.Arrays.ensureCapacity;
 import static com.facebook.presto.orc.metadata.Stream.StreamKind.LENGTH;
 import static com.facebook.presto.orc.metadata.Stream.StreamKind.PRESENT;
 import static com.facebook.presto.orc.reader.SelectiveStreamReaders.initializeOutputPositions;
@@ -69,6 +69,7 @@ public class MapDirectSelectiveStreamReader
     private static final int INSTANCE_SIZE = ClassLayout.parseClass(MapDirectSelectiveStreamReader.class).instanceSize();
 
     private final StreamDescriptor streamDescriptor;
+    private final boolean legacyMapSubscript;
     private final boolean nullsAllowed;
     private final boolean nonNullsAllowed;
     private final boolean outputRequired;
@@ -78,7 +79,7 @@ public class MapDirectSelectiveStreamReader
     private final SelectiveStreamReader keyReader;
     private final SelectiveStreamReader valueReader;
 
-    private final LocalMemoryContext systemMemoryContext;
+    private final OrcLocalMemoryContext systemMemoryContext;
 
     private int readOffset;
     private int nestedReadOffset;
@@ -112,12 +113,14 @@ public class MapDirectSelectiveStreamReader
             List<Subfield> requiredSubfields,
             Optional<Type> outputType,
             DateTimeZone hiveStorageTimeZone,
-            AggregatedMemoryContext systemMemoryContext)
+            boolean legacyMapSubscript,
+            OrcAggregatedMemoryContext systemMemoryContext)
     {
         checkArgument(filters.keySet().stream().map(Subfield::getPath).allMatch(List::isEmpty), "filters on nested columns are not supported yet");
 
         this.streamDescriptor = requireNonNull(streamDescriptor, "streamDescriptor is null");
-        this.systemMemoryContext = requireNonNull(systemMemoryContext, "systemMemoryContext is null").newLocalMemoryContext(MapDirectSelectiveStreamReader.class.getSimpleName());
+        this.legacyMapSubscript = legacyMapSubscript;
+        this.systemMemoryContext = requireNonNull(systemMemoryContext, "systemMemoryContext is null").newOrcLocalMemoryContext(MapDirectSelectiveStreamReader.class.getSimpleName());
         this.outputRequired = requireNonNull(outputType, "outputType is null").isPresent();
         this.outputType = outputType.map(MapType.class::cast).orElse(null);
 
@@ -141,8 +144,8 @@ public class MapDirectSelectiveStreamReader
                         .collect(toImmutableList());
             }
 
-            this.keyReader = SelectiveStreamReaders.createStreamReader(nestedStreams.get(0), keyFilter, keyOutputType, ImmutableList.of(), hiveStorageTimeZone, systemMemoryContext.newAggregatedMemoryContext());
-            this.valueReader = SelectiveStreamReaders.createStreamReader(nestedStreams.get(1), ImmutableMap.of(), valueOutputType, elementRequiredSubfields, hiveStorageTimeZone, systemMemoryContext.newAggregatedMemoryContext());
+            this.keyReader = SelectiveStreamReaders.createStreamReader(nestedStreams.get(0), keyFilter, keyOutputType, ImmutableList.of(), hiveStorageTimeZone, legacyMapSubscript, systemMemoryContext.newOrcAggregatedMemoryContext());
+            this.valueReader = SelectiveStreamReaders.createStreamReader(nestedStreams.get(1), ImmutableMap.of(), valueOutputType, elementRequiredSubfields, hiveStorageTimeZone, legacyMapSubscript, systemMemoryContext.newOrcAggregatedMemoryContext());
         }
         else {
             this.keyReader = null;
@@ -175,6 +178,7 @@ public class MapDirectSelectiveStreamReader
                         .map(path -> path.get(0))
                         .map(Subfield.LongSubscript.class::cast)
                         .mapToLong(Subfield.LongSubscript::getIndex)
+                        .distinct()
                         .toArray();
 
                 if (requiredIndices.length == 0) {
@@ -185,7 +189,7 @@ public class MapDirectSelectiveStreamReader
                     return BigintRange.of(requiredIndices[0], requiredIndices[0], false);
                 }
 
-                return BigintValues.of(requiredIndices, false);
+                return toBigintValues(requiredIndices, false);
             }
             case STRING:
             case CHAR:
@@ -288,6 +292,7 @@ public class MapDirectSelectiveStreamReader
 
         int streamPosition = 0;
         int nestedOffset = 0;
+        int nestedPositionCount = 0;
 
         for (int i = 0; i < positionCount; i++) {
             int position = positions[i];
@@ -303,6 +308,7 @@ public class MapDirectSelectiveStreamReader
             nestedLengths[i] = length;
             nestedOffsets[i] = nestedOffset;
             nestedOffset += length;
+            nestedPositionCount += length;
         }
 
         outputPositionCount = positionCount;
@@ -310,7 +316,7 @@ public class MapDirectSelectiveStreamReader
 
         if (outputRequired) {
             nestedOffsets[positionCount] = nestedOffset;
-            int nestedPositionCount = populateNestedPositions(positionCount, nestedOffset);
+            populateNestedPositions(positionCount, nestedPositionCount);
             readKeyValueStreams(nestedPositionCount);
         }
         nestedReadOffset += nestedOffset;
@@ -332,6 +338,7 @@ public class MapDirectSelectiveStreamReader
         int streamPosition = 0;
         int nonNullPositionCount = 0;
         int nestedOffset = 0;
+        int nestedPositionCount = 0;
 
         for (int i = 0; i < positionCount; i++) {
             int position = positions[i];
@@ -354,6 +361,7 @@ public class MapDirectSelectiveStreamReader
                         nestedLengths[nonNullPositionCount] = length;
                         nestedOffsets[nonNullPositionCount] = nestedOffset;
                         nonNullPositionCount++;
+                        nestedPositionCount += length;
                     }
 
                     outputPositions[outputPositionCount] = position;
@@ -379,7 +387,7 @@ public class MapDirectSelectiveStreamReader
         }
         else if (outputRequired) {
             nestedOffsets[nonNullPositionCount] = nestedOffset;
-            int nestedPositionCount = populateNestedPositions(nonNullPositionCount, nestedOffset);
+            populateNestedPositions(nonNullPositionCount, nestedPositionCount);
             readKeyValueStreams(nestedPositionCount);
         }
 
@@ -387,16 +395,15 @@ public class MapDirectSelectiveStreamReader
         nestedReadOffset += nestedOffset;
     }
 
-    private int populateNestedPositions(int positionCount, int nestedOffset)
+    private void populateNestedPositions(int positionCount, int nestedPositionCount)
     {
-        nestedPositions = ensureCapacity(nestedPositions, nestedOffset);
-        int nestedPositionCount = 0;
+        nestedPositions = ensureCapacity(nestedPositions, nestedPositionCount);
+        int index = 0;
         for (int i = 0; i < positionCount; i++) {
             for (int j = 0; j < nestedLengths[i]; j++) {
-                nestedPositions[nestedPositionCount++] = nestedOffsets[i] + j;
+                nestedPositions[index++] = nestedOffsets[i] + j;
             }
         }
-        return nestedPositionCount;
     }
 
     private void readKeyValueStreams(int positionCount)
@@ -624,7 +631,7 @@ public class MapDirectSelectiveStreamReader
         outputPositionCount = positionCount;
     }
 
-    private BlockLease newLease(Block block, BlockLease...fieldBlockLeases)
+    private BlockLease newLease(Block block, BlockLease... fieldBlockLeases)
     {
         valuesInUse = true;
         return ClosingBlockLease.newLease(block, () -> {
@@ -651,11 +658,31 @@ public class MapDirectSelectiveStreamReader
     @Override
     public void close()
     {
+        if (keyReader != null) {
+            keyReader.close();
+        }
+        if (valueReader != null) {
+            valueReader.close();
+        }
+
+        nestedOffsets = null;
+        offsets = null;
+        nulls = null;
+        outputPositions = null;
+        nestedLengths = null;
+        nestedPositions = null;
+        nestedOutputPositions = null;
+
+        lengthStream = null;
+        lengthStreamSource = null;
+        presentStream = null;
+        lengthStreamSource = null;
+
         systemMemoryContext.close();
     }
 
     @Override
-    public void startStripe(InputStreamSources dictionaryStreamSources, List<ColumnEncoding> encoding)
+    public void startStripe(InputStreamSources dictionaryStreamSources, Map<Integer, ColumnEncoding> encoding)
             throws IOException
     {
         presentStreamSource = missingStreamSource(BooleanInputStream.class);

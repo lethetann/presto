@@ -13,7 +13,7 @@
  */
 package com.facebook.presto.verifier.resolver;
 
-import com.facebook.presto.verifier.framework.QueryException;
+import com.facebook.presto.verifier.framework.PrestoQueryException;
 import org.testng.annotations.Test;
 
 import java.util.Optional;
@@ -34,15 +34,15 @@ public class TestExceededTimeLimitFailureResolver
     public void testResolved()
     {
         assertEquals(
-                getFailureResolver().resolve(
+                getFailureResolver().resolveQueryFailure(
                         CONTROL_QUERY_STATS,
-                        QueryException.forPresto(
+                        new PrestoQueryException(
                                 new RuntimeException(),
-                                Optional.of(EXCEEDED_TIME_LIMIT),
                                 false,
-                                Optional.of(createQueryStats(CONTROL_CPU_TIME_MILLIS / 2, CONTROL_PEAK_MEMORY_BYTES)),
-                                TEST_MAIN),
+                                TEST_MAIN,
+                                Optional.of(EXCEEDED_TIME_LIMIT),
+                                createQueryActionStats(CONTROL_CPU_TIME_MILLIS / 2, CONTROL_PEAK_TOTAL_MEMORY_BYTES)),
                         Optional.empty()),
-                Optional.of("Auto Resolved: Test cluster has less computing resource"));
+                Optional.of("Time limit exceeded on test cluster"));
     }
 }

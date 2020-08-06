@@ -13,8 +13,9 @@
  */
 package com.facebook.presto.spi.function;
 
+import com.facebook.presto.common.function.QualifiedFunctionName;
+import com.facebook.presto.common.type.TypeSignature;
 import com.facebook.presto.spi.api.Experimental;
-import com.facebook.presto.spi.type.TypeSignature;
 
 import java.util.Collections;
 import java.util.List;
@@ -22,6 +23,7 @@ import java.util.Objects;
 import java.util.Optional;
 
 import static com.facebook.presto.spi.function.FunctionKind.SCALAR;
+import static com.facebook.presto.spi.function.SqlFunctionVisibility.PUBLIC;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.collectingAndThen;
@@ -32,7 +34,7 @@ import static java.util.stream.Collectors.toList;
 public class SqlInvokedFunction
         implements SqlFunction
 {
-    private final List<SqlParameter> parameters;
+    private final List<Parameter> parameters;
     private final String description;
     private final RoutineCharacteristics routineCharacteristics;
     private final String body;
@@ -43,7 +45,7 @@ public class SqlInvokedFunction
 
     public SqlInvokedFunction(
             QualifiedFunctionName functionName,
-            List<SqlParameter> parameters,
+            List<Parameter> parameters,
             TypeSignature returnType,
             String description,
             RoutineCharacteristics routineCharacteristics,
@@ -56,7 +58,7 @@ public class SqlInvokedFunction
         this.body = requireNonNull(body, "body is null");
 
         List<TypeSignature> argumentTypes = parameters.stream()
-                .map(SqlParameter::getType)
+                .map(Parameter::getType)
                 .collect(collectingAndThen(toList(), Collections::unmodifiableList));
         this.signature = new Signature(functionName, SCALAR, returnType, argumentTypes);
         this.functionId = new SqlFunctionId(functionName, argumentTypes);
@@ -85,9 +87,9 @@ public class SqlInvokedFunction
     }
 
     @Override
-    public boolean isHidden()
+    public SqlFunctionVisibility getVisibility()
     {
-        return false;
+        return PUBLIC;
     }
 
     @Override
@@ -108,7 +110,7 @@ public class SqlInvokedFunction
         return description;
     }
 
-    public List<SqlParameter> getParameters()
+    public List<Parameter> getParameters()
     {
         return parameters;
     }
@@ -136,11 +138,6 @@ public class SqlInvokedFunction
     public Optional<Long> getVersion()
     {
         return functionHandle.map(SqlFunctionHandle::getVersion);
-    }
-
-    public FunctionImplementationType getFunctionImplementationType()
-    {
-        return FunctionImplementationType.SQL;
     }
 
     public SqlFunctionHandle getRequiredFunctionHandle()

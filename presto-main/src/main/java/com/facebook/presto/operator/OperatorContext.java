@@ -15,12 +15,12 @@ package com.facebook.presto.operator;
 
 import com.facebook.airlift.stats.CounterStat;
 import com.facebook.presto.Session;
+import com.facebook.presto.common.Page;
 import com.facebook.presto.memory.QueryContextVisitor;
 import com.facebook.presto.memory.context.AggregatedMemoryContext;
 import com.facebook.presto.memory.context.LocalMemoryContext;
 import com.facebook.presto.memory.context.MemoryTrackingContext;
 import com.facebook.presto.operator.OperationTimer.OperationTiming;
-import com.facebook.presto.spi.Page;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.plan.PlanNodeId;
 import com.google.common.annotations.VisibleForTesting;
@@ -171,7 +171,7 @@ public class OperatorContext
     {
         rawInputDataSize.update(sizeInBytes);
         rawInputPositions.update(positionCount);
-        addInputTiming.record(readNanos, 0);
+        addInputTiming.record(readNanos, 0, 0);
     }
 
     /**
@@ -262,6 +262,12 @@ public class OperatorContext
     public AggregatedMemoryContext aggregateUserMemoryContext()
     {
         return new InternalAggregatedMemoryContext(operatorMemoryContext.aggregateUserMemoryContext(), memoryFuture, this::updatePeakMemoryReservations, false);
+    }
+
+    // caller shouldn't close this context as it's managed by the OperatorContext
+    public AggregatedMemoryContext aggregateRevocableMemoryContext()
+    {
+        return new InternalAggregatedMemoryContext(operatorMemoryContext.aggregateRevocableMemoryContext(), memoryFuture, () -> {}, false);
     }
 
     // caller should close this context as it's a new context
@@ -453,6 +459,7 @@ public class OperatorContext
                 addInputTiming.getCalls(),
                 succinctNanos(addInputTiming.getWallNanos()),
                 succinctNanos(addInputTiming.getCpuNanos()),
+                succinctBytes(addInputTiming.getAllocationBytes()),
                 succinctBytes(rawInputDataSize.getTotalCount()),
                 rawInputPositions.getTotalCount(),
                 succinctBytes(inputDataSize.getTotalCount()),
@@ -462,6 +469,7 @@ public class OperatorContext
                 getOutputTiming.getCalls(),
                 succinctNanos(getOutputTiming.getWallNanos()),
                 succinctNanos(getOutputTiming.getCpuNanos()),
+                succinctBytes(getOutputTiming.getAllocationBytes()),
                 succinctBytes(outputDataSize.getTotalCount()),
                 outputPositions.getTotalCount(),
 
@@ -472,6 +480,7 @@ public class OperatorContext
                 finishTiming.getCalls(),
                 succinctNanos(finishTiming.getWallNanos()),
                 succinctNanos(finishTiming.getCpuNanos()),
+                succinctBytes(finishTiming.getAllocationBytes()),
 
                 succinctBytes(operatorMemoryContext.getUserMemory()),
                 succinctBytes(getReservedRevocableBytes()),
@@ -600,7 +609,13 @@ public class OperatorContext
         @Override
         public ListenableFuture<?> setBytes(long bytes)
         {
-            ListenableFuture<?> blocked = delegate.setBytes(bytes);
+            return setBytes(bytes, false);
+        }
+
+        @Override
+        public ListenableFuture<?> setBytes(long bytes, boolean enforceBroadcastMemoryLimit)
+        {
+            ListenableFuture<?> blocked = delegate.setBytes(bytes, enforceBroadcastMemoryLimit);
             updateMemoryFuture(blocked, memoryFuture);
             allocationListener.run();
             return blocked;
@@ -609,7 +624,13 @@ public class OperatorContext
         @Override
         public boolean trySetBytes(long bytes)
         {
-            if (delegate.trySetBytes(bytes)) {
+            return trySetBytes(bytes, false);
+        }
+
+        @Override
+        public boolean trySetBytes(long bytes, boolean enforceBroadcastMemoryLimit)
+        {
+            if (delegate.trySetBytes(bytes, enforceBroadcastMemoryLimit)) {
                 allocationListener.run();
                 return true;
             }

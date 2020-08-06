@@ -43,7 +43,6 @@ import static com.facebook.presto.execution.QueryState.FAILED;
 import static com.facebook.presto.execution.QueryStats.immediateFailureQueryStats;
 import static com.facebook.presto.execution.StageInfo.getAllStages;
 import static com.facebook.presto.memory.LocalMemoryManager.GENERAL_POOL;
-import static com.facebook.presto.util.Failures.toFailure;
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static java.util.Objects.requireNonNull;
 
@@ -81,6 +80,8 @@ public class QueryInfo
     private final Optional<QueryType> queryType;
     // failedTasks is only available for final query info because the construction is expensive.
     private final Optional<List<TaskId>> failedTasks;
+    // RuntimeOptimizedStages is only available for final query info, because it is appended during runtime.
+    private final Optional<List<StageId>> runtimeOptimizedStages;
 
     @JsonCreator
     public QueryInfo(
@@ -112,7 +113,8 @@ public class QueryInfo
             @JsonProperty("completeInfo") boolean completeInfo,
             @JsonProperty("resourceGroupId") Optional<ResourceGroupId> resourceGroupId,
             @JsonProperty("queryType") Optional<QueryType> queryType,
-            @JsonProperty("failedTasks") Optional<List<TaskId>> failedTasks)
+            @JsonProperty("failedTasks") Optional<List<TaskId>> failedTasks,
+            @JsonProperty("runtimeOptimizedStages") Optional<List<StageId>> runtimeOptimizedStages)
     {
         requireNonNull(queryId, "queryId is null");
         requireNonNull(session, "session is null");
@@ -135,6 +137,7 @@ public class QueryInfo
         requireNonNull(warnings, "warnings is null");
         requireNonNull(queryType, "queryType is null");
         requireNonNull(failedTasks, "failedTasks is null");
+        requireNonNull(runtimeOptimizedStages, "runtimeOptimizedStages is null");
 
         this.queryId = queryId;
         this.session = session;
@@ -166,17 +169,11 @@ public class QueryInfo
         this.resourceGroupId = resourceGroupId;
         this.queryType = queryType;
         this.failedTasks = failedTasks;
+        this.runtimeOptimizedStages = runtimeOptimizedStages;
     }
 
-    public static QueryInfo immediateFailureQueryInfo(
-            Session session,
-            String query,
-            URI self,
-            Optional<ResourceGroupId> resourceGroupId,
-            Optional<QueryType> queryType,
-            Throwable throwable)
+    public static QueryInfo immediateFailureQueryInfo(Session session, String query, URI self, Optional<ResourceGroupId> resourceGroupId, ExecutionFailureInfo failureCause)
     {
-        ExecutionFailureInfo failureCause = toFailure(throwable);
         QueryInfo queryInfo = new QueryInfo(
                 session.getQueryId(),
                 session.toSessionRepresentation(),
@@ -198,14 +195,15 @@ public class QueryInfo
                 false,
                 null,
                 Optional.empty(),
-                failureCause,
+                failureCause.getCause(),
                 failureCause.getErrorCode(),
                 ImmutableList.of(),
                 ImmutableSet.of(),
                 Optional.empty(),
-                true,
+                false,
                 resourceGroupId,
-                queryType,
+                Optional.empty(),
+                Optional.empty(),
                 Optional.empty());
 
         return queryInfo;
@@ -393,6 +391,12 @@ public class QueryInfo
     public Optional<List<TaskId>> getFailedTasks()
     {
         return failedTasks;
+    }
+
+    @JsonProperty
+    public Optional<List<StageId>> getRuntimeOptimizedStages()
+    {
+        return runtimeOptimizedStages;
     }
 
     @Override

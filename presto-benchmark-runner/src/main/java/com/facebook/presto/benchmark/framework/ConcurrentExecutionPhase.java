@@ -19,34 +19,41 @@ import com.google.common.collect.ImmutableList;
 
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 
+import static com.facebook.presto.benchmark.framework.ExecutionStrategy.CONCURRENT;
 import static java.util.Objects.requireNonNull;
 
 public class ConcurrentExecutionPhase
         extends PhaseSpecification
 {
-    private final ExecutionStrategy executionStrategy;
     private final List<String> queries;
+    private Optional<Integer> maxConcurrency;
 
     @JsonCreator
-    public ConcurrentExecutionPhase(String name, ExecutionStrategy executionStrategy, List<String> queries)
+    public ConcurrentExecutionPhase(String name, List<String> queries, Optional<Integer> maxConcurrency)
     {
         super(name);
-        this.executionStrategy = requireNonNull(executionStrategy, "executionStrategy is null");
-        this.queries = requireNonNull(ImmutableList.copyOf(queries), "queries is null");
+        this.queries = ImmutableList.copyOf(queries);
+        this.maxConcurrency = requireNonNull(maxConcurrency, "maxConcurrency is null");
     }
 
-    @JsonProperty
     @Override
     public ExecutionStrategy getExecutionStrategy()
     {
-        return executionStrategy;
+        return CONCURRENT;
     }
 
     @JsonProperty
     public List<String> getQueries()
     {
         return queries;
+    }
+
+    @JsonProperty
+    public Optional<Integer> getMaxConcurrency()
+    {
+        return maxConcurrency;
     }
 
     @Override
@@ -59,14 +66,14 @@ public class ConcurrentExecutionPhase
             return false;
         }
         ConcurrentExecutionPhase o = (ConcurrentExecutionPhase) obj;
-        return Objects.equals(getExecutionStrategy(), o.getExecutionStrategy()) &&
-                Objects.equals(getName(), o.getName()) &&
-                Objects.equals(queries, o.queries);
+        return Objects.equals(getName(), o.getName()) &&
+                Objects.equals(queries, o.queries) &&
+                Objects.equals(maxConcurrency, o.maxConcurrency);
     }
 
     @Override
     public int hashCode()
     {
-        return Objects.hash(getExecutionStrategy(), getName(), queries);
+        return Objects.hash(getName(), queries, maxConcurrency);
     }
 }

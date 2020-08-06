@@ -65,7 +65,17 @@ public abstract class PlanVisitor<R, C>
         return visitPlan(node, context);
     }
 
+    public R visitMarkDistinct(MarkDistinctNode node, C context)
+    {
+        return visitPlan(node, context);
+    }
+
     public R visitTopN(TopNNode node, C context)
+    {
+        return visitPlan(node, context);
+    }
+
+    public R visitDistinctLimit(DistinctLimitNode node, C context)
     {
         return visitPlan(node, context);
     }

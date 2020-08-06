@@ -13,19 +13,20 @@
  */
 package com.facebook.presto.verifier.prestoaction;
 
+import com.facebook.presto.jdbc.QueryStats;
 import com.facebook.presto.sql.parser.ParsingOptions;
 import com.facebook.presto.sql.parser.SqlParser;
 import com.facebook.presto.sql.parser.SqlParserOptions;
 import com.facebook.presto.tests.StandaloneQueryRunner;
 import com.facebook.presto.verifier.event.QueryFailure;
+import com.facebook.presto.verifier.framework.PrestoQueryException;
 import com.facebook.presto.verifier.framework.QueryConfiguration;
-import com.facebook.presto.verifier.framework.QueryException;
 import com.facebook.presto.verifier.framework.QueryResult;
 import com.facebook.presto.verifier.framework.QueryStage;
 import com.facebook.presto.verifier.framework.VerificationContext;
+import com.facebook.presto.verifier.framework.VerifierConfig;
 import com.facebook.presto.verifier.retry.RetryConfig;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableSet;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
@@ -41,7 +42,6 @@ import static com.facebook.presto.verifier.VerifierTestUtil.CATALOG;
 import static com.facebook.presto.verifier.VerifierTestUtil.SCHEMA;
 import static com.facebook.presto.verifier.VerifierTestUtil.setupPresto;
 import static com.facebook.presto.verifier.framework.ClusterType.CONTROL;
-import static com.facebook.presto.verifier.framework.QueryException.Type.PRESTO;
 import static com.facebook.presto.verifier.framework.QueryStage.CONTROL_MAIN;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static org.testng.Assert.assertEquals;
@@ -53,6 +53,8 @@ import static org.testng.Assert.fail;
 @Test(singleThreaded = true)
 public class TestJdbcPrestoAction
 {
+    private static final String SUITE = "test-suite";
+    private static final String NAME = "test-query";
     private static final QueryStage QUERY_STAGE = CONTROL_MAIN;
     private static final QueryConfiguration CONFIGURATION = new QueryConfiguration(CATALOG, SCHEMA, Optional.of("user"), Optional.empty(), Optional.empty());
     private static final SqlParser sqlParser = new SqlParser(new SqlParserOptions().allowIdentifierSymbol(COLON, AT_SIGN));
@@ -73,16 +75,20 @@ public class TestJdbcPrestoAction
     @BeforeMethod
     public void setup()
     {
-        verificationContext = new VerificationContext();
+        QueryActionsConfig queryActionsConfig = new QueryActionsConfig();
+        verificationContext = VerificationContext.create(SUITE, NAME);
         prestoAction = new JdbcPrestoAction(
-                new PrestoExceptionClassifier(ImmutableSet.of(), ImmutableSet.of()),
+                PrestoExceptionClassifier.defaultBuilder().build(),
                 CONFIGURATION,
                 verificationContext,
-                new PrestoClusterConfig()
+                new PrestoActionConfig()
                         .setHost(queryRunner.getServer().getAddress().getHost())
                         .setJdbcPort(queryRunner.getServer().getAddress().getPort()),
+                queryActionsConfig.getMetadataTimeout(),
+                queryActionsConfig.getChecksumTimeout(),
                 new RetryConfig(),
-                new RetryConfig());
+                new RetryConfig(),
+                new VerifierConfig().setTestId("test"));
     }
 
     @Test
@@ -91,13 +97,13 @@ public class TestJdbcPrestoAction
         assertEquals(
                 prestoAction.execute(
                         sqlParser.createStatement("SELECT 1", PARSING_OPTIONS),
-                        QUERY_STAGE).getState(),
+                        QUERY_STAGE).getQueryStats().map(QueryStats::getState).orElse(null),
                 FINISHED.name());
 
         assertEquals(
                 prestoAction.execute(
                         sqlParser.createStatement("CREATE TABLE test_table (x int)", PARSING_OPTIONS),
-                        QUERY_STAGE).getState(),
+                        QUERY_STAGE).getQueryStats().map(QueryStats::getState).orElse(null),
                 FINISHED.name());
     }
 
@@ -107,8 +113,8 @@ public class TestJdbcPrestoAction
         QueryResult<Integer> result = prestoAction.execute(
                 sqlParser.createStatement("SELECT x FROM (VALUES (1), (2), (3)) t(x)", PARSING_OPTIONS),
                 QUERY_STAGE,
-                resultSet -> resultSet.getInt("x") * resultSet.getInt("x"));
-        assertEquals(result.getQueryStats().getState(), FINISHED.name());
+                resultSet -> Optional.of(resultSet.getInt("x") * resultSet.getInt("x")));
+        assertEquals(result.getQueryActionStats().getQueryStats().map(QueryStats::getState).orElse(null), FINISHED.name());
         assertEquals(result.getResults(), ImmutableList.of(1, 4, 9));
     }
 
@@ -121,12 +127,11 @@ public class TestJdbcPrestoAction
                     QUERY_STAGE);
             fail("Expect QueryException");
         }
-        catch (QueryException qe) {
-            assertEquals(qe.getType(), PRESTO);
-            assertFalse(qe.isRetryable());
-            assertEquals(qe.getErrorCode(), "PRESTO(SYNTAX_ERROR)");
-            assertTrue(qe.getQueryStats().isPresent());
-            assertEquals(qe.getQueryStats().get().getState(), FAILED.name());
+        catch (PrestoQueryException e) {
+            assertFalse(e.isRetryable());
+            assertEquals(e.getErrorCodeName(), "PRESTO(SYNTAX_ERROR)");
+            assertTrue(e.getQueryActionStats().getQueryStats().isPresent());
+            assertEquals(e.getQueryActionStats().getQueryStats().map(QueryStats::getState).orElse(null), FAILED.name());
 
             QueryFailure queryFailure = getOnlyElement(verificationContext.getQueryFailures());
             assertEquals(queryFailure.getClusterType(), CONTROL.name());

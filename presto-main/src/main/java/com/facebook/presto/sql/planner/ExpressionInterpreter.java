@@ -16,27 +16,29 @@ package com.facebook.presto.sql.planner;
 import com.facebook.airlift.json.JsonCodec;
 import com.facebook.presto.Session;
 import com.facebook.presto.client.FailureInfo;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.block.RowBlockBuilder;
+import com.facebook.presto.common.block.SingleRowBlock;
+import com.facebook.presto.common.function.OperatorType;
+import com.facebook.presto.common.function.SqlFunctionProperties;
+import com.facebook.presto.common.type.ArrayType;
+import com.facebook.presto.common.type.FunctionType;
+import com.facebook.presto.common.type.RowType;
+import com.facebook.presto.common.type.RowType.Field;
+import com.facebook.presto.common.type.StandardTypes;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeManager;
+import com.facebook.presto.common.type.TypeUtils;
 import com.facebook.presto.execution.warnings.WarningCollector;
+import com.facebook.presto.expressions.DynamicFilters;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.operator.scalar.ArraySubscriptOperator;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.StandardErrorCode;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.block.RowBlockBuilder;
-import com.facebook.presto.spi.block.SingleRowBlock;
 import com.facebook.presto.spi.function.FunctionHandle;
 import com.facebook.presto.spi.function.FunctionMetadata;
-import com.facebook.presto.spi.function.OperatorType;
 import com.facebook.presto.spi.function.SqlInvokedScalarFunctionImplementation;
-import com.facebook.presto.spi.type.ArrayType;
-import com.facebook.presto.spi.type.FunctionType;
-import com.facebook.presto.spi.type.RowType;
-import com.facebook.presto.spi.type.RowType.Field;
-import com.facebook.presto.spi.type.StandardTypes;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeManager;
-import com.facebook.presto.spi.type.TypeUtils;
 import com.facebook.presto.sql.InterpretedFunctionInvoker;
 import com.facebook.presto.sql.analyzer.ExpressionAnalyzer;
 import com.facebook.presto.sql.analyzer.Scope;
@@ -114,12 +116,13 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static com.facebook.presto.SystemSessionProperties.isLegacyRowFieldOrdinalAccessEnabled;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.TypeSignature.parseTypeSignature;
+import static com.facebook.presto.common.type.TypeUtils.writeNativeValue;
+import static com.facebook.presto.common.type.VarcharType.createVarcharType;
 import static com.facebook.presto.metadata.CastType.CAST;
+import static com.facebook.presto.metadata.FunctionManager.qualifyFunctionName;
 import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
-import static com.facebook.presto.spi.type.TypeSignature.parseTypeSignature;
-import static com.facebook.presto.spi.type.TypeUtils.writeNativeValue;
-import static com.facebook.presto.spi.type.VarcharType.createVarcharType;
 import static com.facebook.presto.sql.analyzer.ConstantExpressionVerifier.verifyExpressionIsConstant;
 import static com.facebook.presto.sql.analyzer.ExpressionAnalyzer.createConstantAnalyzer;
 import static com.facebook.presto.sql.analyzer.ExpressionAnalyzer.getExpressionTypes;
@@ -147,6 +150,7 @@ import static java.lang.Math.toIntExact;
 import static java.lang.String.format;
 import static java.util.Collections.emptyList;
 import static java.util.Objects.requireNonNull;
+import static java.util.stream.Collectors.toList;
 
 @Deprecated
 public class ExpressionInterpreter
@@ -528,7 +532,7 @@ public class ExpressionInterpreter
                         }
                         return Stream.of(expression);
                     })
-                    .collect(Collectors.toList());
+                    .collect(toList());
 
             if ((!values.isEmpty() && !(values.get(0) instanceof Expression)) || values.size() == 1) {
                 return values.get(0);
@@ -683,8 +687,8 @@ public class ExpressionInterpreter
                     FunctionHandle operatorHandle = metadata.getFunctionManager().resolveOperator(OperatorType.NEGATION, fromTypes(types(node.getValue())));
                     MethodHandle handle = metadata.getFunctionManager().getBuiltInScalarFunctionImplementation(operatorHandle).getMethodHandle();
 
-                    if (handle.type().parameterCount() > 0 && handle.type().parameterType(0) == ConnectorSession.class) {
-                        handle = handle.bindTo(connectorSession);
+                    if (handle.type().parameterCount() > 0 && handle.type().parameterType(0) == SqlFunctionProperties.class) {
+                        handle = handle.bindTo(connectorSession.getSqlFunctionProperties());
                     }
                     try {
                         return handle.invokeWithArguments(value);
@@ -803,8 +807,8 @@ public class ExpressionInterpreter
                     OperatorType.EQUAL,
                     ImmutableList.of(commonType, commonType),
                     ImmutableList.of(
-                            functionInvoker.invoke(firstCast, connectorSession, ImmutableList.of(first)),
-                            functionInvoker.invoke(secondCast, connectorSession, ImmutableList.of(second)))));
+                            functionInvoker.invoke(firstCast, session.getSqlFunctionProperties(), ImmutableList.of(first)),
+                            functionInvoker.invoke(secondCast, session.getSqlFunctionProperties(), ImmutableList.of(second)))));
 
             if (equal) {
                 return null;
@@ -898,7 +902,10 @@ public class ExpressionInterpreter
                 argumentValues.add(value);
                 argumentTypes.add(type);
             }
-            FunctionHandle functionHandle = metadata.getFunctionManager().resolveFunction(session.getTransactionId(), node.getName(), fromTypes(argumentTypes));
+            FunctionHandle functionHandle = metadata.getFunctionManager().resolveFunction(
+                    session.getTransactionId(),
+                    qualifyFunctionName(node.getName()),
+                    fromTypes(argumentTypes));
             FunctionMetadata functionMetadata = metadata.getFunctionManager().getFunctionMetadata(functionHandle);
             if (!functionMetadata.isCalledOnNullInput()) {
                 for (int i = 0; i < argumentValues.size(); i++) {
@@ -910,7 +917,11 @@ public class ExpressionInterpreter
             }
 
             // do not optimize non-deterministic functions
-            if (optimize && (!functionMetadata.isDeterministic() || hasUnresolvedValue(argumentValues) || node.getName().equals(QualifiedName.of("fail")))) {
+            if (optimize &&
+                    (!functionMetadata.isDeterministic() ||
+                            hasUnresolvedValue(argumentValues) ||
+                            node.getName().equals(QualifiedName.of(DynamicFilters.DynamicFilterPlaceholderFunction.NAME)) ||
+                            node.getName().equals(QualifiedName.of("fail")))) {
                 return new FunctionCall(node.getName(), node.getWindow(), node.isDistinct(), node.isIgnoreNulls(), toExpressions(argumentValues, argumentTypes));
             }
 
@@ -918,7 +929,7 @@ public class ExpressionInterpreter
 
             switch (functionMetadata.getImplementationType()) {
                 case BUILTIN:
-                    result = functionInvoker.invoke(functionHandle, connectorSession, argumentValues);
+                    result = functionInvoker.invoke(functionHandle, session.getSqlFunctionProperties(), argumentValues);
                     break;
                 case SQL:
                     Expression function = getSqlFunctionExpression(functionMetadata, (SqlInvokedScalarFunctionImplementation) metadata.getFunctionManager().getScalarFunctionImplementation(functionHandle), session.getSqlFunctionProperties(), node.getArguments());
@@ -972,7 +983,7 @@ public class ExpressionInterpreter
         {
             List<Object> values = node.getValues().stream()
                     .map(value -> process(value, context))
-                    .collect(toImmutableList());
+                    .collect(toList());
             Object function = process(node.getFunction(), context);
 
             if (hasUnresolvedValue(values) || hasUnresolvedValue(function)) {
@@ -1120,7 +1131,7 @@ public class ExpressionInterpreter
             FunctionHandle operator = metadata.getFunctionManager().lookupCast(CAST, sourceType.getTypeSignature(), targetType.getTypeSignature());
 
             try {
-                Object castedValue = functionInvoker.invoke(operator, connectorSession, ImmutableList.of(value));
+                Object castedValue = functionInvoker.invoke(operator, session.getSqlFunctionProperties(), ImmutableList.of(value));
                 if (optimize && !isSerializable(castedValue, type(node))) {
                     return new Cast(toExpression(value, sourceType), node.getType(), node.isSafe(), node.isTypeOnly());
                 }
@@ -1263,7 +1274,7 @@ public class ExpressionInterpreter
         private Object invokeOperator(OperatorType operatorType, List<? extends Type> argumentTypes, List<Object> argumentValues)
         {
             FunctionHandle operatorHandle = metadata.getFunctionManager().resolveOperator(operatorType, fromTypes(argumentTypes));
-            return functionInvoker.invoke(operatorHandle, connectorSession, argumentValues);
+            return functionInvoker.invoke(operatorHandle, session.getSqlFunctionProperties(), argumentValues);
         }
 
         private Expression toExpression(Object base, Type type)

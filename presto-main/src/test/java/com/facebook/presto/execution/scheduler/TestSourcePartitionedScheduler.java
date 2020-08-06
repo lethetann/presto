@@ -14,6 +14,7 @@
 package com.facebook.presto.execution.scheduler;
 
 import com.facebook.presto.client.NodeVersion;
+import com.facebook.presto.common.predicate.TupleDomain;
 import com.facebook.presto.cost.StatsAndCosts;
 import com.facebook.presto.execution.LocationFactory;
 import com.facebook.presto.execution.MockRemoteTaskFactory;
@@ -25,6 +26,7 @@ import com.facebook.presto.execution.StageExecutionId;
 import com.facebook.presto.execution.StageId;
 import com.facebook.presto.execution.TestSqlTaskManager.MockLocationFactory;
 import com.facebook.presto.execution.buffer.OutputBuffers.OutputBufferId;
+import com.facebook.presto.execution.scheduler.nodeSelection.NodeSelectionStats;
 import com.facebook.presto.failureDetector.NoOpFailureDetector;
 import com.facebook.presto.metadata.InMemoryNodeManager;
 import com.facebook.presto.metadata.InternalNode;
@@ -40,7 +42,6 @@ import com.facebook.presto.spi.TableHandle;
 import com.facebook.presto.spi.connector.ConnectorPartitionHandle;
 import com.facebook.presto.spi.plan.PlanNodeId;
 import com.facebook.presto.spi.plan.TableScanNode;
-import com.facebook.presto.spi.predicate.TupleDomain;
 import com.facebook.presto.spi.relation.VariableReferenceExpression;
 import com.facebook.presto.split.ConnectorAwareSplitSource;
 import com.facebook.presto.split.SplitSource;
@@ -75,12 +76,12 @@ import java.util.concurrent.ScheduledExecutorService;
 
 import static com.facebook.airlift.concurrent.Threads.daemonThreadsNamed;
 import static com.facebook.presto.SessionTestUtils.TEST_SESSION;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.facebook.presto.execution.buffer.OutputBuffers.BufferType.PARTITIONED;
 import static com.facebook.presto.execution.buffer.OutputBuffers.createInitialEmptyOutputBuffers;
 import static com.facebook.presto.execution.scheduler.SourcePartitionedScheduler.newSourcePartitionedSchedulerAsStageScheduler;
 import static com.facebook.presto.spi.StandardErrorCode.NO_NODES_AVAILABLE;
 import static com.facebook.presto.spi.connector.NotPartitionedPartitionHandle.NOT_PARTITIONED;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
 import static com.facebook.presto.sql.planner.SystemPartitioningHandle.SINGLE_DISTRIBUTION;
 import static com.facebook.presto.sql.planner.SystemPartitioningHandle.SOURCE_DISTRIBUTION;
 import static com.facebook.presto.sql.planner.plan.ExchangeNode.Type.GATHER;
@@ -311,7 +312,12 @@ public class TestSourcePartitionedScheduler
         try {
             NodeTaskMap nodeTaskMap = new NodeTaskMap(finalizerService);
             InMemoryNodeManager nodeManager = new InMemoryNodeManager();
-            NodeScheduler nodeScheduler = new NodeScheduler(new LegacyNetworkTopology(), nodeManager, new NodeSchedulerConfig().setIncludeCoordinator(false), nodeTaskMap);
+            NodeScheduler nodeScheduler = new NodeScheduler(
+                    new LegacyNetworkTopology(),
+                    nodeManager,
+                    new NodeSelectionStats(),
+                    new NodeSchedulerConfig().setIncludeCoordinator(false),
+                    nodeTaskMap);
 
             SubPlan plan = createPlan();
             SqlStageExecution stage = createSqlStageExecution(plan, nodeTaskMap);
@@ -445,7 +451,7 @@ public class TestSourcePartitionedScheduler
                 .setIncludeCoordinator(false)
                 .setMaxSplitsPerNode(20)
                 .setMaxPendingSplitsPerTask(0);
-        NodeScheduler nodeScheduler = new NodeScheduler(new LegacyNetworkTopology(), nodeManager, nodeSchedulerConfig, nodeTaskMap);
+        NodeScheduler nodeScheduler = new NodeScheduler(new LegacyNetworkTopology(), nodeManager, new NodeSelectionStats(), nodeSchedulerConfig, nodeTaskMap);
         SplitSource splitSource = new ConnectorAwareSplitSource(CONNECTOR_ID, TestingTransactionHandle.create(), connectorSplitSource);
         SplitPlacementPolicy placementPolicy = new DynamicSplitPlacementPolicy(nodeScheduler.createNodeSelector(splitSource.getConnectorId()), stage::getAllTasks);
         return newSourcePartitionedSchedulerAsStageScheduler(stage, TABLE_SCAN_NODE_ID, splitSource, placementPolicy, splitBatchSize);
@@ -479,7 +485,8 @@ public class TestSourcePartitionedScheduler
                         Optional.empty(),
                         Optional.empty(),
                         Optional.empty(),
-                        Optional.empty()),
+                        Optional.empty(),
+                        ImmutableMap.of()),
                 ImmutableSet.of(variable),
                 SOURCE_DISTRIBUTION,
                 ImmutableList.of(TABLE_SCAN_NODE_ID),

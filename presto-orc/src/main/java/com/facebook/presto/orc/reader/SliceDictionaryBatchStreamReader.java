@@ -13,8 +13,11 @@
  */
 package com.facebook.presto.orc.reader;
 
-import com.facebook.presto.memory.context.LocalMemoryContext;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.DictionaryBlock;
+import com.facebook.presto.common.block.VariableWidthBlock;
 import com.facebook.presto.orc.OrcCorruptionException;
+import com.facebook.presto.orc.OrcLocalMemoryContext;
 import com.facebook.presto.orc.StreamDescriptor;
 import com.facebook.presto.orc.metadata.ColumnEncoding;
 import com.facebook.presto.orc.stream.BooleanInputStream;
@@ -23,9 +26,6 @@ import com.facebook.presto.orc.stream.InputStreamSource;
 import com.facebook.presto.orc.stream.InputStreamSources;
 import com.facebook.presto.orc.stream.LongInputStream;
 import com.facebook.presto.orc.stream.RowGroupDictionaryLengthInputStream;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.DictionaryBlock;
-import com.facebook.presto.spi.block.VariableWidthBlock;
 import io.airlift.slice.Slice;
 import org.openjdk.jol.info.ClassLayout;
 
@@ -33,7 +33,7 @@ import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.Arrays;
-import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import static com.facebook.presto.orc.metadata.Stream.StreamKind.DATA;
@@ -99,9 +99,9 @@ public class SliceDictionaryBatchStreamReader
 
     private boolean rowGroupOpen;
 
-    private final LocalMemoryContext systemMemoryContext;
+    private final OrcLocalMemoryContext systemMemoryContext;
 
-    public SliceDictionaryBatchStreamReader(StreamDescriptor streamDescriptor, int maxCodePointCount, boolean isCharType, LocalMemoryContext systemMemoryContext)
+    public SliceDictionaryBatchStreamReader(StreamDescriptor streamDescriptor, int maxCodePointCount, boolean isCharType, OrcLocalMemoryContext systemMemoryContext)
     {
         this.maxCodePointCount = maxCodePointCount;
         this.isCharType = isCharType;
@@ -333,7 +333,7 @@ public class SliceDictionaryBatchStreamReader
     }
 
     @Override
-    public void startStripe(InputStreamSources dictionaryStreamSources, List<ColumnEncoding> encoding)
+    public void startStripe(InputStreamSources dictionaryStreamSources, Map<Integer, ColumnEncoding> encoding)
     {
         stripeDictionaryDataStreamSource = dictionaryStreamSources.getInputStreamSource(streamDescriptor, DICTIONARY_DATA, ByteArrayInputStream.class);
         stripeDictionaryLengthStreamSource = dictionaryStreamSources.getInputStreamSource(streamDescriptor, LENGTH, LongInputStream.class);
@@ -395,6 +395,9 @@ public class SliceDictionaryBatchStreamReader
         stripeDictionaryLength = null;
         stripeDictionaryData = null;
         stripeDictionaryOffsetVector = null;
+        currentDictionaryData = null;
+        rowGroupDictionaryLength = null;
+        dictionaryBlock = null;
     }
 
     @Override

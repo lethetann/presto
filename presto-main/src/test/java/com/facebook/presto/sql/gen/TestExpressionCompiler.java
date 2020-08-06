@@ -15,6 +15,13 @@ package com.facebook.presto.sql.gen;
 
 import com.facebook.airlift.log.Logger;
 import com.facebook.airlift.log.Logging;
+import com.facebook.presto.common.type.ArrayType;
+import com.facebook.presto.common.type.SqlDecimal;
+import com.facebook.presto.common.type.SqlTimestampWithTimeZone;
+import com.facebook.presto.common.type.SqlVarbinary;
+import com.facebook.presto.common.type.TimeZoneKey;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.VarcharType;
 import com.facebook.presto.operator.scalar.BitwiseFunctions;
 import com.facebook.presto.operator.scalar.DateTimeFunctions;
 import com.facebook.presto.operator.scalar.FunctionAssertions;
@@ -24,13 +31,6 @@ import com.facebook.presto.operator.scalar.JsonPath;
 import com.facebook.presto.operator.scalar.MathFunctions;
 import com.facebook.presto.operator.scalar.StringFunctions;
 import com.facebook.presto.spi.ConnectorSession;
-import com.facebook.presto.spi.type.ArrayType;
-import com.facebook.presto.spi.type.SqlDecimal;
-import com.facebook.presto.spi.type.SqlTimestampWithTimeZone;
-import com.facebook.presto.spi.type.SqlVarbinary;
-import com.facebook.presto.spi.type.TimeZoneKey;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.VarcharType;
 import com.facebook.presto.sql.tree.Extract.Field;
 import com.facebook.presto.type.LikeFunctions;
 import com.google.common.base.Preconditions;
@@ -69,22 +69,22 @@ import java.util.stream.LongStream;
 import static com.facebook.airlift.concurrent.Threads.daemonThreadsNamed;
 import static com.facebook.airlift.testing.Closeables.closeAllRuntimeException;
 import static com.facebook.presto.SessionTestUtils.TEST_SESSION;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.DateTimeEncoding.packDateTimeWithZone;
+import static com.facebook.presto.common.type.DecimalType.createDecimalType;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.JsonType.JSON;
+import static com.facebook.presto.common.type.SmallintType.SMALLINT;
+import static com.facebook.presto.common.type.TimestampType.TIMESTAMP;
+import static com.facebook.presto.common.type.TimestampWithTimeZoneType.TIMESTAMP_WITH_TIME_ZONE;
+import static com.facebook.presto.common.type.VarbinaryType.VARBINARY;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
+import static com.facebook.presto.common.type.VarcharType.createUnboundedVarcharType;
+import static com.facebook.presto.common.type.VarcharType.createVarcharType;
 import static com.facebook.presto.operator.scalar.JoniRegexpCasts.joniRegexp;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.DateTimeEncoding.packDateTimeWithZone;
-import static com.facebook.presto.spi.type.DecimalType.createDecimalType;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
-import static com.facebook.presto.spi.type.SmallintType.SMALLINT;
-import static com.facebook.presto.spi.type.TimestampType.TIMESTAMP;
-import static com.facebook.presto.spi.type.TimestampWithTimeZoneType.TIMESTAMP_WITH_TIME_ZONE;
-import static com.facebook.presto.spi.type.VarbinaryType.VARBINARY;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
-import static com.facebook.presto.spi.type.VarcharType.createUnboundedVarcharType;
-import static com.facebook.presto.spi.type.VarcharType.createVarcharType;
 import static com.facebook.presto.testing.DateTimeTestingUtils.sqlTimestampOf;
-import static com.facebook.presto.type.JsonType.JSON;
 import static com.facebook.presto.type.UnknownType.UNKNOWN;
 import static com.facebook.presto.util.DateTimeZoneIndex.getDateTimeZone;
 import static com.facebook.presto.util.StructuralTestUtil.mapType;
@@ -1504,35 +1504,35 @@ public class TestExpressionCompiler
     {
         switch (field) {
             case YEAR:
-                return DateTimeFunctions.yearFromTimestamp(session, value);
+                return DateTimeFunctions.yearFromTimestamp(session.getSqlFunctionProperties(), value);
             case QUARTER:
-                return DateTimeFunctions.quarterFromTimestamp(session, value);
+                return DateTimeFunctions.quarterFromTimestamp(session.getSqlFunctionProperties(), value);
             case MONTH:
-                return DateTimeFunctions.monthFromTimestamp(session, value);
+                return DateTimeFunctions.monthFromTimestamp(session.getSqlFunctionProperties(), value);
             case WEEK:
-                return DateTimeFunctions.weekFromTimestamp(session, value);
+                return DateTimeFunctions.weekFromTimestamp(session.getSqlFunctionProperties(), value);
             case DAY:
             case DAY_OF_MONTH:
-                return DateTimeFunctions.dayFromTimestamp(session, value);
+                return DateTimeFunctions.dayFromTimestamp(session.getSqlFunctionProperties(), value);
             case DAY_OF_WEEK:
             case DOW:
-                return DateTimeFunctions.dayOfWeekFromTimestamp(session, value);
+                return DateTimeFunctions.dayOfWeekFromTimestamp(session.getSqlFunctionProperties(), value);
             case YEAR_OF_WEEK:
             case YOW:
-                return DateTimeFunctions.yearOfWeekFromTimestamp(session, value);
+                return DateTimeFunctions.yearOfWeekFromTimestamp(session.getSqlFunctionProperties(), value);
             case DAY_OF_YEAR:
             case DOY:
-                return DateTimeFunctions.dayOfYearFromTimestamp(session, value);
+                return DateTimeFunctions.dayOfYearFromTimestamp(session.getSqlFunctionProperties(), value);
             case HOUR:
-                return DateTimeFunctions.hourFromTimestamp(session, value);
+                return DateTimeFunctions.hourFromTimestamp(session.getSqlFunctionProperties(), value);
             case MINUTE:
-                return DateTimeFunctions.minuteFromTimestamp(session, value);
+                return DateTimeFunctions.minuteFromTimestamp(session.getSqlFunctionProperties(), value);
             case SECOND:
                 return DateTimeFunctions.secondFromTimestamp(value);
             case TIMEZONE_MINUTE:
-                return DateTimeFunctions.timeZoneMinuteFromTimestampWithTimeZone(packDateTimeWithZone(value, session.getTimeZoneKey()));
+                return DateTimeFunctions.timeZoneMinuteFromTimestampWithTimeZone(packDateTimeWithZone(value, session.getSqlFunctionProperties().getTimeZoneKey()));
             case TIMEZONE_HOUR:
-                return DateTimeFunctions.timeZoneHourFromTimestampWithTimeZone(packDateTimeWithZone(value, session.getTimeZoneKey()));
+                return DateTimeFunctions.timeZoneHourFromTimestampWithTimeZone(packDateTimeWithZone(value, session.getSqlFunctionProperties().getTimeZoneKey()));
         }
         throw new AssertionError("Unhandled field: " + field);
     }

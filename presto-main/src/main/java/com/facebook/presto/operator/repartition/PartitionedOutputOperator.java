@@ -13,10 +13,13 @@
  */
 package com.facebook.presto.operator.repartition;
 
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.PageBuilder;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.RunLengthEncodedBlock;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.execution.buffer.OutputBuffer;
-import com.facebook.presto.execution.buffer.PagesSerde;
 import com.facebook.presto.execution.buffer.PagesSerdeFactory;
-import com.facebook.presto.execution.buffer.SerializedPage;
 import com.facebook.presto.memory.context.LocalMemoryContext;
 import com.facebook.presto.operator.DriverContext;
 import com.facebook.presto.operator.Operator;
@@ -24,13 +27,11 @@ import com.facebook.presto.operator.OperatorContext;
 import com.facebook.presto.operator.OperatorFactory;
 import com.facebook.presto.operator.OutputFactory;
 import com.facebook.presto.operator.PartitionFunction;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.PageBuilder;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.RunLengthEncodedBlock;
+import com.facebook.presto.spi.page.PagesSerde;
+import com.facebook.presto.spi.page.SerializedPage;
 import com.facebook.presto.spi.plan.PlanNodeId;
 import com.facebook.presto.spi.relation.ConstantExpression;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.sql.planner.OutputPartitioning;
 import com.google.common.util.concurrent.ListenableFuture;
 import io.airlift.units.DataSize;
 
@@ -40,8 +41,9 @@ import java.util.OptionalInt;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 
+import static com.facebook.presto.common.block.PageBuilderStatus.DEFAULT_MAX_PAGE_SIZE_IN_BYTES;
 import static com.facebook.presto.execution.buffer.PageSplitterUtil.splitPage;
-import static com.facebook.presto.spi.block.PageBuilderStatus.DEFAULT_MAX_PAGE_SIZE_IN_BYTES;
+import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static java.lang.Math.max;
 import static java.lang.Math.min;
@@ -53,28 +55,11 @@ public class PartitionedOutputOperator
     public static class PartitionedOutputFactory
             implements OutputFactory
     {
-        private final PartitionFunction partitionFunction;
-        private final List<Integer> partitionChannels;
-        private final List<Optional<ConstantExpression>> partitionConstants;
         private final OutputBuffer outputBuffer;
-        private final boolean replicatesAnyRow;
-        private final OptionalInt nullChannel;
         private final DataSize maxMemory;
 
-        public PartitionedOutputFactory(
-                PartitionFunction partitionFunction,
-                List<Integer> partitionChannels,
-                List<Optional<ConstantExpression>> partitionConstants,
-                boolean replicatesAnyRow,
-                OptionalInt nullChannel,
-                OutputBuffer outputBuffer,
-                DataSize maxMemory)
+        public PartitionedOutputFactory(OutputBuffer outputBuffer, DataSize maxMemory)
         {
-            this.partitionFunction = requireNonNull(partitionFunction, "partitionFunction is null");
-            this.partitionChannels = requireNonNull(partitionChannels, "partitionChannels is null");
-            this.partitionConstants = requireNonNull(partitionConstants, "partitionConstants is null");
-            this.replicatesAnyRow = replicatesAnyRow;
-            this.nullChannel = requireNonNull(nullChannel, "nullChannel is null");
             this.outputBuffer = requireNonNull(outputBuffer, "outputBuffer is null");
             this.maxMemory = requireNonNull(maxMemory, "maxMemory is null");
         }
@@ -85,18 +70,20 @@ public class PartitionedOutputOperator
                 PlanNodeId planNodeId,
                 List<Type> types,
                 Function<Page, Page> pagePreprocessor,
+                Optional<OutputPartitioning> outputPartitioning,
                 PagesSerdeFactory serdeFactory)
         {
+            checkArgument(outputPartitioning.isPresent(), "outputPartitioning is not present");
             return new PartitionedOutputOperatorFactory(
                     operatorId,
                     planNodeId,
                     types,
                     pagePreprocessor,
-                    partitionFunction,
-                    partitionChannels,
-                    partitionConstants,
-                    replicatesAnyRow,
-                    nullChannel,
+                    outputPartitioning.get().getPartitionFunction(),
+                    outputPartitioning.get().getPartitionChannels(),
+                    outputPartitioning.get().getPartitionConstants(),
+                    outputPartitioning.get().isReplicateNullsAndAny(),
+                    outputPartitioning.get().getNullChannel(),
                     outputBuffer,
                     serdeFactory,
                     maxMemory);
@@ -192,8 +179,6 @@ public class PartitionedOutputOperator
     private final OperatorContext operatorContext;
     private final Function<Page, Page> pagePreprocessor;
     private final PagePartitioner partitionFunction;
-    private final LocalMemoryContext systemMemoryContext;
-    private final long partitionsInitialRetainedSize;
     private boolean finished;
 
     public PartitionedOutputOperator(
@@ -224,9 +209,6 @@ public class PartitionedOutputOperator
                 operatorContext);
 
         operatorContext.setInfoSupplier(this::getInfo);
-        this.systemMemoryContext = operatorContext.newLocalSystemMemoryContext(PartitionedOutputOperator.class.getSimpleName());
-        this.partitionsInitialRetainedSize = this.partitionFunction.getRetainedSizeInBytes();
-        this.systemMemoryContext.setBytes(partitionsInitialRetainedSize);
     }
 
     @Override
@@ -277,14 +259,6 @@ public class PartitionedOutputOperator
 
         page = pagePreprocessor.apply(page);
         partitionFunction.partitionPage(page);
-
-        // We use getSizeInBytes() here instead of getRetainedSizeInBytes() for an approximation of
-        // the amount of memory used by the pageBuilders, because calculating the retained
-        // size can be expensive especially for complex types.
-        long partitionsSizeInBytes = partitionFunction.getSizeInBytes();
-
-        // We also add partitionsInitialRetainedSize as an approximation of the object overhead of the partitions.
-        systemMemoryContext.setBytes(partitionsSizeInBytes + partitionsInitialRetainedSize);
     }
 
     @Override
@@ -308,6 +282,7 @@ public class PartitionedOutputOperator
         private final AtomicLong pagesAdded = new AtomicLong();
         private boolean hasAnyRowBeenReplicated;
         private final OperatorContext operatorContext;
+        private final LocalMemoryContext systemMemoryContext;
 
         public PagePartitioner(
                 PartitionFunction partitionFunction,
@@ -332,6 +307,8 @@ public class PartitionedOutputOperator
             this.sourceTypes = requireNonNull(sourceTypes, "sourceTypes is null");
             this.serde = requireNonNull(serdeFactory, "serdeFactory is null").createPagesSerde();
             this.operatorContext = requireNonNull(operatorContext, "operatorContext is null");
+            this.systemMemoryContext = operatorContext.newLocalSystemMemoryContext(PartitionedOutputOperator.class.getSimpleName());
+            this.systemMemoryContext.setBytes(getRetainedSizeInBytes());
 
             int partitionCount = partitionFunction.getPartitionCount();
             int pageSize = min(DEFAULT_MAX_PAGE_SIZE_IN_BYTES, ((int) maxMemory.toBytes()) / partitionCount);
@@ -353,8 +330,10 @@ public class PartitionedOutputOperator
             // We use a foreach loop instead of streams
             // as it has much better performance.
             long sizeInBytes = serde.getSizeInBytes();
-            for (PageBuilder pageBuilder : pageBuilders) {
-                sizeInBytes += pageBuilder.getSizeInBytes();
+            if (pageBuilders != null) {
+                for (PageBuilder pageBuilder : pageBuilders) {
+                    sizeInBytes += pageBuilder.getSizeInBytes();
+                }
             }
             return sizeInBytes;
         }
@@ -365,8 +344,10 @@ public class PartitionedOutputOperator
         public long getRetainedSizeInBytes()
         {
             long sizeInBytes = serde.getRetainedSizeInBytes();
-            for (PageBuilder pageBuilder : pageBuilders) {
-                sizeInBytes += pageBuilder.getRetainedSizeInBytes();
+            if (pageBuilders != null) {
+                for (PageBuilder pageBuilder : pageBuilders) {
+                    sizeInBytes += pageBuilder.getRetainedSizeInBytes();
+                }
             }
             return sizeInBytes;
         }
@@ -395,6 +376,10 @@ public class PartitionedOutputOperator
                     appendRow(pageBuilders[partition], page, position);
                 }
             }
+
+            // We track the memory before it's flushed to avoid under counting when the page size is large.
+            systemMemoryContext.setBytes(getRetainedSizeInBytes());
+
             flush(false);
         }
 

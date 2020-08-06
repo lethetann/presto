@@ -13,19 +13,31 @@
  */
 package com.facebook.presto.hive;
 
+import com.facebook.airlift.json.JsonCodec;
 import com.facebook.presto.PagesIndexPageSorter;
 import com.facebook.presto.block.BlockEncodingManager;
+import com.facebook.presto.common.type.ArrayType;
+import com.facebook.presto.common.type.MapType;
+import com.facebook.presto.common.type.NamedTypeSignature;
+import com.facebook.presto.common.type.RowType;
+import com.facebook.presto.common.type.StandardTypes;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeSignatureParameter;
 import com.facebook.presto.cost.ConnectorFilterStatsCalculatorService;
 import com.facebook.presto.cost.FilterStatsCalculator;
 import com.facebook.presto.cost.ScalarStatsCalculator;
 import com.facebook.presto.cost.StatsNormalizer;
 import com.facebook.presto.hive.authentication.NoHdfsAuthentication;
+import com.facebook.presto.hive.datasink.OutputStreamDataSinkFactory;
 import com.facebook.presto.hive.gcs.HiveGcsConfig;
 import com.facebook.presto.hive.gcs.HiveGcsConfigurationInitializer;
 import com.facebook.presto.hive.orc.DwrfBatchPageSourceFactory;
 import com.facebook.presto.hive.orc.DwrfSelectivePageSourceFactory;
 import com.facebook.presto.hive.orc.OrcBatchPageSourceFactory;
 import com.facebook.presto.hive.orc.OrcSelectivePageSourceFactory;
+import com.facebook.presto.hive.orc.TupleDomainFilterCache;
+import com.facebook.presto.hive.pagefile.PageFilePageSourceFactory;
+import com.facebook.presto.hive.pagefile.PageFileWriterFactory;
 import com.facebook.presto.hive.parquet.ParquetPageSourceFactory;
 import com.facebook.presto.hive.rcfile.RcFilePageSourceFactory;
 import com.facebook.presto.hive.s3.HiveS3Config;
@@ -46,13 +58,6 @@ import com.facebook.presto.spi.relation.ExpressionOptimizer;
 import com.facebook.presto.spi.relation.PredicateCompiler;
 import com.facebook.presto.spi.relation.RowExpression;
 import com.facebook.presto.spi.relation.RowExpressionService;
-import com.facebook.presto.spi.type.ArrayType;
-import com.facebook.presto.spi.type.MapType;
-import com.facebook.presto.spi.type.NamedTypeSignature;
-import com.facebook.presto.spi.type.RowType;
-import com.facebook.presto.spi.type.StandardTypes;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeSignatureParameter;
 import com.facebook.presto.sql.analyzer.FeaturesConfig;
 import com.facebook.presto.sql.gen.RowExpressionPredicateCompiler;
 import com.facebook.presto.sql.planner.planPrinter.RowExpressionFormatter;
@@ -70,7 +75,9 @@ import java.math.BigDecimal;
 import java.util.List;
 import java.util.Set;
 
-import static com.facebook.presto.spi.type.Decimals.encodeScaledValue;
+import static com.facebook.airlift.json.JsonCodec.jsonCodec;
+import static com.facebook.presto.common.type.Decimals.encodeScaledValue;
+import static com.facebook.presto.hive.HiveDwrfEncryptionProvider.NO_ENCRYPTION;
 import static java.util.stream.Collectors.toList;
 
 public final class HiveTestUtils
@@ -78,6 +85,8 @@ public final class HiveTestUtils
     private HiveTestUtils()
     {
     }
+
+    public static final JsonCodec<PartitionUpdate> PARTITION_UPDATE_CODEC = jsonCodec(PartitionUpdate.class);
 
     public static final ConnectorSession SESSION = new TestingConnectorSession(
             new HiveSessionProperties(new HiveClientConfig(), new OrcFileWriterConfig(), new ParquetFileWriterConfig()).getSessionProperties());
@@ -141,10 +150,11 @@ public final class HiveTestUtils
         FileFormatDataSourceStats stats = new FileFormatDataSourceStats();
         HdfsEnvironment testHdfsEnvironment = createTestHdfsEnvironment(hiveClientConfig, metastoreClientConfig);
         return ImmutableSet.<HiveBatchPageSourceFactory>builder()
-                .add(new RcFilePageSourceFactory(TYPE_MANAGER, testHdfsEnvironment, stats, new HadoopFileOpener()))
-                .add(new OrcBatchPageSourceFactory(TYPE_MANAGER, hiveClientConfig, testHdfsEnvironment, stats, new StorageOrcFileTailSource(), new StorageStripeMetadataSource(), new HadoopFileOpener()))
-                .add(new DwrfBatchPageSourceFactory(TYPE_MANAGER, hiveClientConfig, testHdfsEnvironment, stats, new StorageOrcFileTailSource(), new StorageStripeMetadataSource(), new HadoopFileOpener()))
-                .add(new ParquetPageSourceFactory(TYPE_MANAGER, testHdfsEnvironment, stats, new HadoopFileOpener()))
+                .add(new RcFilePageSourceFactory(TYPE_MANAGER, testHdfsEnvironment, stats))
+                .add(new OrcBatchPageSourceFactory(TYPE_MANAGER, hiveClientConfig, testHdfsEnvironment, stats, new StorageOrcFileTailSource(), new StorageStripeMetadataSource()))
+                .add(new DwrfBatchPageSourceFactory(TYPE_MANAGER, hiveClientConfig, testHdfsEnvironment, stats, new StorageOrcFileTailSource(), new StorageStripeMetadataSource(), NO_ENCRYPTION))
+                .add(new ParquetPageSourceFactory(TYPE_MANAGER, testHdfsEnvironment, stats))
+                .add(new PageFilePageSourceFactory(testHdfsEnvironment, new BlockEncodingManager(TYPE_MANAGER)))
                 .build();
     }
 
@@ -153,8 +163,8 @@ public final class HiveTestUtils
         FileFormatDataSourceStats stats = new FileFormatDataSourceStats();
         HdfsEnvironment testHdfsEnvironment = createTestHdfsEnvironment(hiveClientConfig, metastoreClientConfig);
         return ImmutableSet.<HiveSelectivePageSourceFactory>builder()
-                .add(new OrcSelectivePageSourceFactory(TYPE_MANAGER, FUNCTION_RESOLUTION, ROW_EXPRESSION_SERVICE, hiveClientConfig, testHdfsEnvironment, stats, new StorageOrcFileTailSource(), new StorageStripeMetadataSource(), new HadoopFileOpener()))
-                .add(new DwrfSelectivePageSourceFactory(TYPE_MANAGER, FUNCTION_RESOLUTION, ROW_EXPRESSION_SERVICE, hiveClientConfig, testHdfsEnvironment, stats, new StorageOrcFileTailSource(), new StorageStripeMetadataSource(), new HadoopFileOpener()))
+                .add(new OrcSelectivePageSourceFactory(TYPE_MANAGER, FUNCTION_RESOLUTION, ROW_EXPRESSION_SERVICE, hiveClientConfig, testHdfsEnvironment, stats, new StorageOrcFileTailSource(), new StorageStripeMetadataSource(), new TupleDomainFilterCache()))
+                .add(new DwrfSelectivePageSourceFactory(TYPE_MANAGER, FUNCTION_RESOLUTION, ROW_EXPRESSION_SERVICE, hiveClientConfig, testHdfsEnvironment, stats, new StorageOrcFileTailSource(), new StorageStripeMetadataSource(), new TupleDomainFilterCache(), NO_ENCRYPTION))
                 .build();
     }
 
@@ -171,6 +181,7 @@ public final class HiveTestUtils
         HdfsEnvironment testHdfsEnvironment = createTestHdfsEnvironment(hiveClientConfig, metastoreClientConfig);
         return ImmutableSet.<HiveFileWriterFactory>builder()
                 .add(new RcFileFileWriterFactory(testHdfsEnvironment, TYPE_MANAGER, new NodeVersion("test_version"), hiveClientConfig, new FileFormatDataSourceStats()))
+                .add(new PageFileWriterFactory(testHdfsEnvironment, new OutputStreamDataSinkFactory(), new BlockEncodingManager(TYPE_MANAGER)))
                 .add(getDefaultOrcFileWriterFactory(hiveClientConfig, metastoreClientConfig))
                 .build();
     }
@@ -180,11 +191,13 @@ public final class HiveTestUtils
         HdfsEnvironment testHdfsEnvironment = createTestHdfsEnvironment(hiveClientConfig, metastoreClientConfig);
         return new OrcFileWriterFactory(
                 testHdfsEnvironment,
+                new OutputStreamDataSinkFactory(),
                 TYPE_MANAGER,
                 new NodeVersion("test_version"),
                 hiveClientConfig,
                 new FileFormatDataSourceStats(),
-                new OrcFileWriterConfig());
+                new OrcFileWriterConfig(),
+                NO_ENCRYPTION);
     }
 
     public static List<Type> getTypes(List<? extends ColumnHandle> columnHandles)

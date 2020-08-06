@@ -20,6 +20,8 @@ import com.facebook.airlift.jaxrs.testing.JaxrsTestingHttpProcessor;
 import com.facebook.airlift.json.JsonCodec;
 import com.facebook.airlift.json.JsonModule;
 import com.facebook.presto.client.NodeVersion;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeManager;
 import com.facebook.presto.execution.Lifespan;
 import com.facebook.presto.execution.NodeTaskMap;
 import com.facebook.presto.execution.QueryManagerConfig;
@@ -30,7 +32,6 @@ import com.facebook.presto.execution.TaskManagerConfig;
 import com.facebook.presto.execution.TaskSource;
 import com.facebook.presto.execution.TaskState;
 import com.facebook.presto.execution.TaskStatus;
-import com.facebook.presto.execution.TaskTestUtils;
 import com.facebook.presto.execution.TestSqlTaskManager;
 import com.facebook.presto.execution.buffer.OutputBuffers;
 import com.facebook.presto.execution.scheduler.TableWriteInfo;
@@ -46,10 +47,9 @@ import com.facebook.presto.spi.ConnectorId;
 import com.facebook.presto.spi.ErrorCode;
 import com.facebook.presto.spi.plan.PlanNodeId;
 import com.facebook.presto.spi.relation.VariableReferenceExpression;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeManager;
 import com.facebook.presto.sql.Serialization;
 import com.facebook.presto.sql.analyzer.FeaturesConfig;
+import com.facebook.presto.sql.planner.PlanFragment;
 import com.facebook.presto.testing.TestingHandleResolver;
 import com.facebook.presto.testing.TestingSplit;
 import com.facebook.presto.testing.TestingTransactionHandle;
@@ -83,7 +83,7 @@ import java.net.URI;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
-import java.util.OptionalInt;
+import java.util.UUID;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -96,8 +96,10 @@ import static com.facebook.presto.SessionTestUtils.TEST_SESSION;
 import static com.facebook.presto.client.PrestoHeaders.PRESTO_CURRENT_STATE;
 import static com.facebook.presto.client.PrestoHeaders.PRESTO_MAX_WAIT;
 import static com.facebook.presto.execution.TaskTestUtils.TABLE_SCAN_NODE_ID;
+import static com.facebook.presto.execution.TaskTestUtils.createPlanFragment;
 import static com.facebook.presto.execution.buffer.OutputBuffers.createInitialEmptyOutputBuffers;
 import static com.facebook.presto.server.smile.SmileCodecBinder.smileCodecBinder;
+import static com.facebook.presto.spi.SplitContext.NON_CACHEABLE;
 import static com.facebook.presto.spi.StandardErrorCode.REMOTE_TASK_ERROR;
 import static com.facebook.presto.spi.StandardErrorCode.REMOTE_TASK_MISMATCH;
 import static com.facebook.presto.testing.assertions.Assert.assertEquals;
@@ -160,7 +162,7 @@ public class TestHttpRemoteTask
         remoteTask.start();
 
         Lifespan lifespan = Lifespan.driverGroup(3);
-        remoteTask.addSplits(ImmutableMultimap.of(TABLE_SCAN_NODE_ID, new Split(new ConnectorId("test"), TestingTransactionHandle.create(), TestingSplit.createLocalSplit(), lifespan)));
+        remoteTask.addSplits(ImmutableMultimap.of(TABLE_SCAN_NODE_ID, new Split(new ConnectorId("test"), TestingTransactionHandle.create(), TestingSplit.createLocalSplit(), lifespan, NON_CACHEABLE)));
         poll(() -> testingTaskResource.getTaskSource(TABLE_SCAN_NODE_ID) != null);
         poll(() -> testingTaskResource.getTaskSource(TABLE_SCAN_NODE_ID).getSplits().size() == 1);
 
@@ -216,9 +218,8 @@ public class TestHttpRemoteTask
                 TEST_SESSION,
                 new TaskId("test", 1, 0, 2),
                 new InternalNode("node-id", URI.create("http://fake.invalid/"), new NodeVersion("version"), false),
-                TaskTestUtils.PLAN_FRAGMENT,
+                createPlanFragment(),
                 ImmutableMultimap.of(),
-                OptionalInt.empty(),
                 createInitialEmptyOutputBuffers(OutputBuffers.BufferType.BROADCAST),
                 new NodeTaskMap.PartitionedSplitCountTracker(i -> {}),
                 true,
@@ -246,9 +247,11 @@ public class TestHttpRemoteTask
                         smileCodecBinder(binder).bindSmileCodec(TaskStatus.class);
                         smileCodecBinder(binder).bindSmileCodec(TaskInfo.class);
                         smileCodecBinder(binder).bindSmileCodec(TaskUpdateRequest.class);
+                        smileCodecBinder(binder).bindSmileCodec(PlanFragment.class);
                         jsonCodecBinder(binder).bindJsonCodec(TaskStatus.class);
                         jsonCodecBinder(binder).bindJsonCodec(TaskInfo.class);
                         jsonCodecBinder(binder).bindJsonCodec(TaskUpdateRequest.class);
+                        jsonCodecBinder(binder).bindJsonCodec(PlanFragment.class);
                         jsonBinder(binder).addKeySerializerBinding(VariableReferenceExpression.class).to(Serialization.VariableReferenceExpressionSerializer.class);
                         jsonBinder(binder).addKeyDeserializerBinding(VariableReferenceExpression.class).to(Serialization.VariableReferenceExpressionDeserializer.class);
                     }
@@ -261,7 +264,9 @@ public class TestHttpRemoteTask
                             JsonCodec<TaskInfo> taskInfoJsonCodec,
                             SmileCodec<TaskInfo> taskInfoSmileCodec,
                             JsonCodec<TaskUpdateRequest> taskUpdateRequestJsonCodec,
-                            SmileCodec<TaskUpdateRequest> taskUpdateRequestSmileCodec)
+                            SmileCodec<TaskUpdateRequest> taskUpdateRequestSmileCodec,
+                            JsonCodec<PlanFragment> planFragmentJsonCodec,
+                            SmileCodec<PlanFragment> planFragmentSmileCodec)
                     {
                         JaxrsTestingHttpProcessor jaxrsTestingHttpProcessor = new JaxrsTestingHttpProcessor(URI.create("http://fake.invalid/"), testingTaskResource, jsonMapper);
                         TestingHttpClient testingHttpClient = new TestingHttpClient(jaxrsTestingHttpProcessor.setTrace(TRACE_HTTP));
@@ -277,6 +282,8 @@ public class TestHttpRemoteTask
                                 taskInfoSmileCodec,
                                 taskUpdateRequestJsonCodec,
                                 taskUpdateRequestSmileCodec,
+                                planFragmentJsonCodec,
+                                planFragmentSmileCodec,
                                 new RemoteTaskStats(),
                                 new InternalCommunicationConfig());
                     }
@@ -336,8 +343,8 @@ public class TestHttpRemoteTask
     @Path("/task/{nodeId}")
     public static class TestingTaskResource
     {
-        private static final String INITIAL_TASK_INSTANCE_ID = "task-instance-id";
-        private static final String NEW_TASK_INSTANCE_ID = "task-instance-id-x";
+        private static final UUID INITIAL_TASK_INSTANCE_ID = UUID.randomUUID();
+        private static final UUID NEW_TASK_INSTANCE_ID = UUID.randomUUID();
 
         private final AtomicLong lastActivityNanos;
         private final FailureScenario failureScenario;
@@ -348,7 +355,8 @@ public class TestHttpRemoteTask
         private TaskStatus initialTaskStatus;
         private long version;
         private TaskState taskState;
-        private String taskInstanceId = INITIAL_TASK_INSTANCE_ID;
+        private long taskInstanceIdLeastSignificantBits = INITIAL_TASK_INSTANCE_ID.getLeastSignificantBits();
+        private long taskInstanceIdMostSignificantBits = INITIAL_TASK_INSTANCE_ID.getMostSignificantBits();
 
         private long statusFetchCounter;
 
@@ -457,6 +465,7 @@ public class TestHttpRemoteTask
         private TaskInfo buildTaskInfo()
         {
             return new TaskInfo(
+                    initialTaskInfo.getTaskId(),
                     buildTaskStatus(),
                     initialTaskInfo.getLastHeartbeat(),
                     initialTaskInfo.getOutputBuffers(),
@@ -473,7 +482,8 @@ public class TestHttpRemoteTask
                 case TASK_MISMATCH:
                 case TASK_MISMATCH_WHEN_VERSION_IS_HIGH:
                     if (statusFetchCounter == 10) {
-                        taskInstanceId = NEW_TASK_INSTANCE_ID;
+                        taskInstanceIdLeastSignificantBits = NEW_TASK_INSTANCE_ID.getLeastSignificantBits();
+                        taskInstanceIdMostSignificantBits = NEW_TASK_INSTANCE_ID.getMostSignificantBits();
                         version = 0;
                     }
                     break;
@@ -490,22 +500,22 @@ public class TestHttpRemoteTask
             }
 
             return new TaskStatus(
-                    initialTaskStatus.getTaskId(),
-                    taskInstanceId,
+                    taskInstanceIdLeastSignificantBits,
+                    taskInstanceIdMostSignificantBits,
                     ++version,
                     taskState,
                     initialTaskStatus.getSelf(),
-                    "fake",
                     ImmutableSet.of(),
                     initialTaskStatus.getFailures(),
                     initialTaskStatus.getQueuedPartitionedDrivers(),
                     initialTaskStatus.getRunningPartitionedDrivers(),
+                    initialTaskStatus.getOutputBufferUtilization(),
                     initialTaskStatus.isOutputBufferOverutilized(),
-                    initialTaskStatus.getPhysicalWrittenDataSize(),
-                    initialTaskStatus.getMemoryReservation(),
-                    initialTaskStatus.getSystemMemoryReservation(),
+                    initialTaskStatus.getPhysicalWrittenDataSizeInBytes(),
+                    initialTaskStatus.getMemoryReservationInBytes(),
+                    initialTaskStatus.getSystemMemoryReservationInBytes(),
                     initialTaskStatus.getFullGcCount(),
-                    initialTaskStatus.getFullGcTime());
+                    initialTaskStatus.getFullGcTimeInMillis());
         }
     }
 }

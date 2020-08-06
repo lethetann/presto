@@ -39,7 +39,6 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import io.airlift.units.DataSize;
-import io.airlift.units.Duration;
 import org.joda.time.DateTime;
 
 import javax.annotation.Nullable;
@@ -47,7 +46,6 @@ import javax.annotation.Nullable;
 import java.net.URI;
 import java.util.List;
 import java.util.Optional;
-import java.util.OptionalInt;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
@@ -62,17 +60,14 @@ import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.util.concurrent.Futures.immediateFuture;
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
-import static io.airlift.units.DataSize.Unit.BYTE;
-import static io.airlift.units.DataSize.succinctBytes;
 import static java.util.Objects.requireNonNull;
-import static java.util.concurrent.TimeUnit.MILLISECONDS;
 
 public class SqlTask
 {
     private static final Logger log = Logger.get(SqlTask.class);
 
     private final TaskId taskId;
-    private final String taskInstanceId;
+    private final TaskInstanceId taskInstanceId;
     private final URI location;
     private final String nodeId;
     private final TaskStateMachine taskStateMachine;
@@ -124,7 +119,7 @@ public class SqlTask
             DataSize maxBufferSize)
     {
         this.taskId = requireNonNull(taskId, "taskId is null");
-        this.taskInstanceId = UUID.randomUUID().toString();
+        this.taskInstanceId = new TaskInstanceId(UUID.randomUUID());
         this.location = requireNonNull(location, "location is null");
         this.nodeId = requireNonNull(nodeId, "nodeId is null");
         this.queryContext = requireNonNull(queryContext, "queryContext is null");
@@ -136,7 +131,7 @@ public class SqlTask
         this.taskExchangeClientManager = new TaskExchangeClientManager(exchangeClientSupplier);
         outputBuffer = new LazyOutputBuffer(
                 taskId,
-                taskInstanceId,
+                taskInstanceId.getUuidString(),
                 taskNotificationExecutor,
                 maxBufferSize,
                 // Pass a memory context supplier instead of a memory context to the output buffer,
@@ -214,7 +209,7 @@ public class SqlTask
 
     public String getTaskInstanceId()
     {
-        return taskInstanceId;
+        return taskInstanceId.getUuidString();
     }
 
     public void recordHeartbeat()
@@ -250,22 +245,22 @@ public class SqlTask
 
         int queuedPartitionedDrivers = 0;
         int runningPartitionedDrivers = 0;
-        DataSize physicalWrittenDataSize = new DataSize(0, BYTE);
-        DataSize userMemoryReservation = new DataSize(0, BYTE);
-        DataSize systemMemoryReservation = new DataSize(0, BYTE);
+        long physicalWrittenDataSizeInBytes = 0L;
+        long userMemoryReservationInBytes = 0L;
+        long systemMemoryReservationInBytes = 0L;
         // TODO: add a mechanism to avoid sending the whole completedDriverGroups set over the wire for every task status reply
         Set<Lifespan> completedDriverGroups = ImmutableSet.of();
         long fullGcCount = 0;
-        Duration fullGcTime = new Duration(0, MILLISECONDS);
+        long fullGcTimeInMillis = 0L;
         if (taskHolder.getFinalTaskInfo() != null) {
             TaskStats taskStats = taskHolder.getFinalTaskInfo().getStats();
             queuedPartitionedDrivers = taskStats.getQueuedPartitionedDrivers();
             runningPartitionedDrivers = taskStats.getRunningPartitionedDrivers();
-            physicalWrittenDataSize = taskStats.getPhysicalWrittenDataSize();
-            userMemoryReservation = taskStats.getUserMemoryReservation();
-            systemMemoryReservation = taskStats.getSystemMemoryReservation();
+            physicalWrittenDataSizeInBytes = taskStats.getPhysicalWrittenDataSizeInBytes();
+            userMemoryReservationInBytes = taskStats.getUserMemoryReservationInBytes();
+            systemMemoryReservationInBytes = taskStats.getSystemMemoryReservationInBytes();
             fullGcCount = taskStats.getFullGcCount();
-            fullGcTime = taskStats.getFullGcTime();
+            fullGcTimeInMillis = taskStats.getFullGcTimeInMillis();
         }
         else if (taskHolder.getTaskExecution() != null) {
             long physicalWrittenBytes = 0;
@@ -276,30 +271,31 @@ public class SqlTask
                 runningPartitionedDrivers += pipelineStatus.getRunningPartitionedDrivers();
                 physicalWrittenBytes += pipelineContext.getPhysicalWrittenDataSize();
             }
-            physicalWrittenDataSize = succinctBytes(physicalWrittenBytes);
-            userMemoryReservation = taskContext.getMemoryReservation();
-            systemMemoryReservation = taskContext.getSystemMemoryReservation();
+            physicalWrittenDataSizeInBytes = physicalWrittenBytes;
+            userMemoryReservationInBytes = taskContext.getMemoryReservation().toBytes();
+            systemMemoryReservationInBytes = taskContext.getSystemMemoryReservation().toBytes();
             completedDriverGroups = taskContext.getCompletedDriverGroups();
             fullGcCount = taskContext.getFullGcCount();
-            fullGcTime = taskContext.getFullGcTime();
+            fullGcTimeInMillis = taskContext.getFullGcTime().toMillis();
         }
 
-        return new TaskStatus(taskStateMachine.getTaskId(),
-                taskInstanceId,
+        return new TaskStatus(
+                taskInstanceId.getUuidLeastSignificantBits(),
+                taskInstanceId.getUuidMostSignificantBits(),
                 versionNumber,
                 state,
                 location,
-                nodeId,
                 completedDriverGroups,
                 failures,
                 queuedPartitionedDrivers,
                 runningPartitionedDrivers,
+                outputBuffer.getUtilization(),
                 isOutputBufferOverutilized(),
-                physicalWrittenDataSize,
-                userMemoryReservation,
-                systemMemoryReservation,
+                physicalWrittenDataSizeInBytes,
+                userMemoryReservationInBytes,
+                systemMemoryReservationInBytes,
                 fullGcCount,
-                fullGcTime);
+                fullGcTimeInMillis);
     }
 
     private TaskStats getTaskStats(TaskHolder taskHolder)
@@ -337,6 +333,7 @@ public class SqlTask
 
         TaskStatus taskStatus = createTaskStatus(taskHolder);
         return new TaskInfo(
+                taskStateMachine.getTaskId(),
                 taskStatus,
                 lastHeartbeat.get(),
                 outputBuffer.getInfo(),
@@ -378,7 +375,6 @@ public class SqlTask
             Optional<PlanFragment> fragment,
             List<TaskSource> sources,
             OutputBuffers outputBuffers,
-            OptionalInt totalPartitions,
             Optional<TableWriteInfo> tableWriteInfo)
     {
         try {
@@ -407,7 +403,6 @@ public class SqlTask
                             taskExchangeClientManager,
                             fragment.get(),
                             sources,
-                            totalPartitions,
                             tableWriteInfo.get());
                     taskHolderReference.compareAndSet(taskHolder, new TaskHolder(taskExecution));
                     needsPlan.set(false);
@@ -562,5 +557,35 @@ public class SqlTask
     public QueryContext getQueryContext()
     {
         return queryContext;
+    }
+
+    private static class TaskInstanceId
+    {
+        private final long uuidLeastSignificantBits;
+        private final long uuidMostSignificantBits;
+        private final String uuidString;
+
+        public TaskInstanceId(UUID uuid)
+        {
+            requireNonNull(uuid, "uuid is null");
+            this.uuidLeastSignificantBits = uuid.getLeastSignificantBits();
+            this.uuidMostSignificantBits = uuid.getMostSignificantBits();
+            this.uuidString = uuid.toString();
+        }
+
+        public long getUuidLeastSignificantBits()
+        {
+            return uuidLeastSignificantBits;
+        }
+
+        public long getUuidMostSignificantBits()
+        {
+            return uuidMostSignificantBits;
+        }
+
+        public String getUuidString()
+        {
+            return uuidString;
+        }
     }
 }

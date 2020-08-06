@@ -28,6 +28,7 @@ import com.facebook.presto.sql.tree.ArithmeticUnaryExpression;
 import com.facebook.presto.sql.tree.Expression;
 import com.facebook.presto.sql.tree.SymbolReference;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import org.testng.annotations.Test;
 
 import java.util.Arrays;
@@ -35,7 +36,7 @@ import java.util.Optional;
 import java.util.function.Function;
 
 import static com.facebook.presto.SystemSessionProperties.JOIN_REORDERING_STRATEGY;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
 import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.any;
 import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.join;
 import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.node;
@@ -280,7 +281,8 @@ public class TestEliminateCrossJoins
                 Optional.empty(),
                 Optional.empty(),
                 Optional.empty(),
-                Optional.empty());
+                Optional.empty(),
+                ImmutableMap.of());
     }
 
     private ValuesNode values(VariableReferenceExpression... variables)

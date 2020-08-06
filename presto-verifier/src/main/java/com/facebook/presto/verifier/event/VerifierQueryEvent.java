@@ -61,6 +61,8 @@ public class VerifierQueryEvent
     private final QueryFailure finalQueryFailure;
     private final List<QueryFailure> queryFailures;
 
+    private final int resubmissionCount;
+
     public VerifierQueryEvent(
             String suite,
             String testId,
@@ -70,12 +72,13 @@ public class VerifierQueryEvent
             Optional<DeterminismAnalysis> determinismAnalysis,
             Optional<DeterminismAnalysisDetails> determinismAnalysisDetails,
             Optional<String> resolveMessage,
-            QueryInfo controlQueryInfo,
+            Optional<QueryInfo> controlQueryInfo,
             QueryInfo testQueryInfo,
             Optional<String> errorCode,
             Optional<String> errorMessage,
             Optional<QueryFailure> finalQueryFailure,
-            List<QueryFailure> queryFailures)
+            List<QueryFailure> queryFailures,
+            int resubmissionCount)
     {
         this.suite = requireNonNull(suite, "suite is null");
         this.testId = requireNonNull(testId, "testId is null");
@@ -86,19 +89,21 @@ public class VerifierQueryEvent
         this.determinismAnalysis = determinismAnalysis.map(DeterminismAnalysis::name).orElse(null);
         this.determinismAnalysisDetails = determinismAnalysisDetails.orElse(null);
         this.resolveMessage = resolveMessage.orElse(null);
-        this.controlQueryInfo = requireNonNull(controlQueryInfo, "controlQueryInfo is null");
+        this.controlQueryInfo = controlQueryInfo.orElse(null);
         this.testQueryInfo = requireNonNull(testQueryInfo, "testQueryInfo is null");
         this.errorCode = errorCode.orElse(null);
         this.errorMessage = errorMessage.orElse(null);
         this.finalQueryFailure = finalQueryFailure.orElse(null);
         this.queryFailures = ImmutableList.copyOf(queryFailures);
+        this.resubmissionCount = resubmissionCount;
     }
 
     public static VerifierQueryEvent skipped(
             String suite,
             String testId,
             SourceQuery sourceQuery,
-            SkippedReason skippedReason)
+            SkippedReason skippedReason,
+            boolean skipControl)
     {
         return new VerifierQueryEvent(
                 suite,
@@ -109,10 +114,12 @@ public class VerifierQueryEvent
                 Optional.empty(),
                 Optional.empty(),
                 Optional.empty(),
-                new QueryInfo(
-                        sourceQuery.getControlConfiguration().getCatalog(),
-                        sourceQuery.getControlConfiguration().getSchema(),
-                        sourceQuery.getControlQuery()),
+                skipControl ?
+                        Optional.empty() :
+                        Optional.of(new QueryInfo(
+                                sourceQuery.getControlConfiguration().getCatalog(),
+                                sourceQuery.getControlConfiguration().getSchema(),
+                                sourceQuery.getControlQuery())),
                 new QueryInfo(
                         sourceQuery.getTestConfiguration().getCatalog(),
                         sourceQuery.getTestConfiguration().getSchema(),
@@ -120,7 +127,8 @@ public class VerifierQueryEvent
                 Optional.empty(),
                 Optional.empty(),
                 Optional.empty(),
-                ImmutableList.of());
+                ImmutableList.of(),
+                0);
     }
 
     @EventField
@@ -212,5 +220,11 @@ public class VerifierQueryEvent
     public List<QueryFailure> getQueryFailures()
     {
         return queryFailures;
+    }
+
+    @EventField
+    public int getResubmissionCount()
+    {
+        return resubmissionCount;
     }
 }

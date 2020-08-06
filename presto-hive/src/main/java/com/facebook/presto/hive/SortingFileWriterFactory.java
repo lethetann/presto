@@ -14,11 +14,11 @@
  */
 package com.facebook.presto.hive;
 
+import com.facebook.presto.common.block.SortOrder;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.PageSorter;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.block.SortOrder;
-import com.facebook.presto.spi.type.Type;
 import com.google.common.collect.ImmutableList;
 import io.airlift.units.DataSize;
 import org.apache.hadoop.fs.FileSystem;
@@ -77,7 +77,7 @@ public class SortingFileWriterFactory
         this.sortedWriteTempFileSubdirectoryCount = sortedWriteTempFileSubdirectoryCount;
     }
 
-    public SortingFileWriter createSortingFileWriter(Path path, HiveFileWriter outputWriter, int bucketNumber, Optional<Path> tempPath)
+    public SortingFileWriter createSortingFileWriter(Path path, HiveFileWriter outputWriter, int fileNumber, Optional<Path> tempPath)
     {
         checkState(tempPath.isPresent() == sortedWriteToTempPathEnabled, "tempPath existence is not consistent with sortedWriteToTempPathEnabled config");
 
@@ -90,7 +90,7 @@ public class SortingFileWriterFactory
         }
 
         Path prefix = sortedWriteToTempPathEnabled
-                ? new Path(tempPath.get(), format(".tmp-sort-%s/.tmp-sort-%s", bucketNumber % sortedWriteTempFileSubdirectoryCount, path.getName()))
+                ? new Path(tempPath.get(), format(".tmp-sort-%s/.tmp-sort-%s", fileNumber % sortedWriteTempFileSubdirectoryCount, path.getName()))
                 : new Path(path.getParent(), ".tmp-sort." + path.getName());
         return new SortingFileWriter(
                 fileSystem,
@@ -102,7 +102,7 @@ public class SortingFileWriterFactory
                 sortFields,
                 sortOrders,
                 pageSorter,
-                (fs, p) -> orcFileWriterFactory.createOrcDataSink(session, fs, p),
+                (fs, p) -> orcFileWriterFactory.createDataSink(session, fs, p),
                 sortedWriteToTempPathEnabled);
     }
 }

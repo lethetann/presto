@@ -158,7 +158,7 @@ public class RowExpressionRewriteRuleSet
             }
             Assignments assignments = builder.build();
             if (anyRewritten) {
-                return Result.ofPlanNode(new ProjectNode(projectNode.getId(), projectNode.getSource(), assignments));
+                return Result.ofPlanNode(new ProjectNode(projectNode.getId(), projectNode.getSource(), assignments, projectNode.getLocality()));
             }
             return Result.empty();
         }
@@ -227,7 +227,8 @@ public class RowExpressionRewriteRuleSet
                     Optional.of(rewritten),
                     joinNode.getLeftHashVariable(),
                     joinNode.getRightHashVariable(),
-                    joinNode.getDistributionType()));
+                    joinNode.getDistributionType(),
+                    joinNode.getDynamicFilters()));
         }
     }
 
@@ -497,7 +498,8 @@ public class RowExpressionRewriteRuleSet
                         node.getTableCommitContextVariable(),
                         node.getColumns(),
                         node.getColumnNames(),
-                        node.getPartitioningScheme(),
+                        node.getTablePartitioningScheme(),
+                        node.getPreferredShufflePartitioningScheme(),
                         rewrittenStatisticsAggregation));
             }
             return Result.empty();

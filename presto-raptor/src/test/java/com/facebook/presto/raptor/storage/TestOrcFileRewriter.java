@@ -15,28 +15,28 @@ package com.facebook.presto.raptor.storage;
 
 import com.facebook.airlift.json.JsonCodec;
 import com.facebook.presto.block.BlockEncodingManager;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.predicate.TupleDomain;
+import com.facebook.presto.common.type.ArrayType;
+import com.facebook.presto.common.type.DecimalType;
+import com.facebook.presto.common.type.StandardTypes;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeManager;
+import com.facebook.presto.common.type.TypeSignature;
+import com.facebook.presto.common.type.TypeSignatureParameter;
 import com.facebook.presto.metadata.FunctionManager;
 import com.facebook.presto.orc.OrcBatchRecordReader;
 import com.facebook.presto.orc.OrcDataSource;
 import com.facebook.presto.orc.OrcReader;
 import com.facebook.presto.orc.OrcWriterStats;
-import com.facebook.presto.orc.OutputStreamOrcDataSink;
+import com.facebook.presto.orc.OutputStreamDataSink;
 import com.facebook.presto.orc.StorageStripeMetadataSource;
 import com.facebook.presto.orc.cache.StorageOrcFileTailSource;
-import com.facebook.presto.raptor.filesystem.FileSystemContext;
+import com.facebook.presto.raptor.RaptorOrcAggregatedMemoryContext;
 import com.facebook.presto.raptor.filesystem.LocalOrcDataEnvironment;
 import com.facebook.presto.raptor.metadata.TableColumn;
 import com.facebook.presto.spi.ConnectorPageSource;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.predicate.TupleDomain;
-import com.facebook.presto.spi.type.ArrayType;
-import com.facebook.presto.spi.type.DecimalType;
-import com.facebook.presto.spi.type.StandardTypes;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeManager;
-import com.facebook.presto.spi.type.TypeSignature;
-import com.facebook.presto.spi.type.TypeSignatureParameter;
 import com.facebook.presto.sql.analyzer.FeaturesConfig;
 import com.facebook.presto.type.TypeRegistry;
 import com.google.common.collect.ImmutableList;
@@ -58,6 +58,7 @@ import java.math.BigDecimal;
 import java.util.BitSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -66,18 +67,21 @@ import java.util.stream.IntStream;
 import static com.facebook.airlift.json.JsonCodec.jsonCodec;
 import static com.facebook.airlift.testing.Assertions.assertBetweenInclusive;
 import static com.facebook.presto.RowPagesBuilder.rowPagesBuilder;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.VarbinaryType.VARBINARY;
+import static com.facebook.presto.common.type.VarcharType.createVarcharType;
+import static com.facebook.presto.hive.HiveFileContext.DEFAULT_HIVE_FILE_CONTEXT;
+import static com.facebook.presto.orc.DwrfEncryptionProvider.NO_ENCRYPTION;
 import static com.facebook.presto.orc.OrcEncoding.ORC;
 import static com.facebook.presto.orc.metadata.CompressionKind.ZSTD;
+import static com.facebook.presto.raptor.filesystem.FileSystemUtil.DEFAULT_RAPTOR_CONTEXT;
 import static com.facebook.presto.raptor.filesystem.LocalFileStorageService.getFileSystemPath;
 import static com.facebook.presto.raptor.storage.OrcTestingUtil.createReader;
 import static com.facebook.presto.raptor.storage.OrcTestingUtil.fileOrcDataSource;
 import static com.facebook.presto.raptor.storage.TestOrcStorageManager.createOrcStorageManager;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
-import static com.facebook.presto.spi.type.VarbinaryType.VARBINARY;
-import static com.facebook.presto.spi.type.VarcharType.createVarcharType;
 import static com.facebook.presto.tests.StructuralTestUtil.arrayBlockOf;
 import static com.facebook.presto.tests.StructuralTestUtil.arrayBlocksEqual;
 import static com.facebook.presto.tests.StructuralTestUtil.mapBlockOf;
@@ -228,7 +232,7 @@ public class TestOrcFileRewriter
         rowsToDelete.set(4);
 
         File newFile = new File(temporary, randomUUID().toString());
-        FileSystem fileSystem = new LocalOrcDataEnvironment().getFileSystem(FileSystemContext.DEFAULT_RAPTOR_CONTEXT);
+        FileSystem fileSystem = new LocalOrcDataEnvironment().getFileSystem(DEFAULT_RAPTOR_CONTEXT);
         OrcFileInfo info = createFileRewriter().rewrite(fileSystem, getColumnTypes(columnIds, columnTypes), path(file), path(newFile), rowsToDelete);
         assertEquals(info.getRowCount(), 2);
         assertBetweenInclusive(info.getUncompressedSize(), 94L, 118L * 2);
@@ -344,7 +348,7 @@ public class TestOrcFileRewriter
         rowsToDelete.set(1);
 
         File newFile = new File(temporary, randomUUID().toString());
-        FileSystem fileSystem = new LocalOrcDataEnvironment().getFileSystem(FileSystemContext.DEFAULT_RAPTOR_CONTEXT);
+        FileSystem fileSystem = new LocalOrcDataEnvironment().getFileSystem(DEFAULT_RAPTOR_CONTEXT);
         OrcFileInfo info = createFileRewriter().rewrite(fileSystem, getColumnTypes(columnIds, columnTypes), path(file), path(newFile), rowsToDelete);
         assertEquals(info.getRowCount(), 1);
         assertBetweenInclusive(info.getUncompressedSize(), 13L, 13L * 2);
@@ -389,7 +393,7 @@ public class TestOrcFileRewriter
         rowsToDelete.set(1);
 
         File newFile = new File(temporary, randomUUID().toString());
-        FileSystem fileSystem = new LocalOrcDataEnvironment().getFileSystem(FileSystemContext.DEFAULT_RAPTOR_CONTEXT);
+        FileSystem fileSystem = new LocalOrcDataEnvironment().getFileSystem(DEFAULT_RAPTOR_CONTEXT);
         OrcFileInfo info = createFileRewriter().rewrite(fileSystem, getColumnTypes(columnIds, columnTypes), path(file), path(newFile), rowsToDelete);
         assertEquals(info.getRowCount(), 0);
         assertEquals(info.getUncompressedSize(), 0);
@@ -412,7 +416,7 @@ public class TestOrcFileRewriter
         BitSet rowsToDelete = new BitSet();
 
         File newFile = new File(temporary, randomUUID().toString());
-        FileSystem fileSystem = new LocalOrcDataEnvironment().getFileSystem(FileSystemContext.DEFAULT_RAPTOR_CONTEXT);
+        FileSystem fileSystem = new LocalOrcDataEnvironment().getFileSystem(DEFAULT_RAPTOR_CONTEXT);
         OrcFileInfo info = createFileRewriter().rewrite(fileSystem, getColumnTypes(columnIds, columnTypes), path(file), path(newFile), rowsToDelete);
         assertEquals(info.getRowCount(), 2);
         assertBetweenInclusive(info.getUncompressedSize(), 16L, 16L * 2);
@@ -437,7 +441,7 @@ public class TestOrcFileRewriter
         }
 
         File newFile = new File(temporary, randomUUID().toString());
-        FileSystem fileSystem = new LocalOrcDataEnvironment().getFileSystem(FileSystemContext.DEFAULT_RAPTOR_CONTEXT);
+        FileSystem fileSystem = new LocalOrcDataEnvironment().getFileSystem(DEFAULT_RAPTOR_CONTEXT);
         OrcFileInfo info = createFileRewriter().rewrite(fileSystem, getColumnTypes(columnIds, columnTypes), path(file), path(newFile), new BitSet());
         assertEquals(info.getRowCount(), 3);
         assertBetweenInclusive(info.getUncompressedSize(), 55L, 55L * 2);
@@ -474,7 +478,7 @@ public class TestOrcFileRewriter
 
         // Add a column
         File newFile1 = new File(temporary, randomUUID().toString());
-        FileSystem fileSystem = new LocalOrcDataEnvironment().getFileSystem(FileSystemContext.DEFAULT_RAPTOR_CONTEXT);
+        FileSystem fileSystem = new LocalOrcDataEnvironment().getFileSystem(DEFAULT_RAPTOR_CONTEXT);
         OrcFileInfo info = createFileRewriter().rewrite(
                 fileSystem,
                 getColumnTypes(ImmutableList.of(3L, 7L, 10L), ImmutableList.of(BIGINT, createVarcharType(20), DOUBLE)),
@@ -495,7 +499,15 @@ public class TestOrcFileRewriter
         assertEquals(info.getRowCount(), 4);
 
         // Optimized writer will keep the only column
-        OrcReader orcReader = new OrcReader(fileOrcDataSource(newFile2), ORC, new StorageOrcFileTailSource(), new StorageStripeMetadataSource(), OrcTestingUtil.createDefaultTestConfig());
+        OrcReader orcReader = new OrcReader(
+                fileOrcDataSource(newFile2),
+                ORC,
+                new StorageOrcFileTailSource(),
+                new StorageStripeMetadataSource(),
+                new RaptorOrcAggregatedMemoryContext(),
+                OrcTestingUtil.createDefaultTestConfig(),
+                false,
+                NO_ENCRYPTION);
         orcReader.getColumnNames().equals(ImmutableList.of("7"));
 
         // Add a column with the different ID with different type
@@ -531,8 +543,11 @@ public class TestOrcFileRewriter
         assertEquals(info.getRowCount(), 1);
 
         ConnectorPageSource source = storageManager.getPageSource(
-                FileSystemContext.DEFAULT_RAPTOR_CONTEXT,
+                DEFAULT_RAPTOR_CONTEXT,
+                DEFAULT_HIVE_FILE_CONTEXT,
                 uuid,
+                Optional.empty(),
+                false,
                 OptionalInt.empty(),
                 ImmutableList.of(13L, 7L, 18L),
                 ImmutableList.of(createVarcharType(5), createVarcharType(20), INTEGER),
@@ -603,7 +618,7 @@ public class TestOrcFileRewriter
 
         // Add a column
         File newFile1 = new File(temporary, randomUUID().toString());
-        FileSystem fileSystem = new LocalOrcDataEnvironment().getFileSystem(FileSystemContext.DEFAULT_RAPTOR_CONTEXT);
+        FileSystem fileSystem = new LocalOrcDataEnvironment().getFileSystem(DEFAULT_RAPTOR_CONTEXT);
         OrcFileInfo info = createFileRewriter().rewrite(
                 fileSystem,
                 getColumnTypes(ImmutableList.of(3L, 7L, 10L), ImmutableList.of(BIGINT, createVarcharType(20), DOUBLE)),
@@ -650,8 +665,11 @@ public class TestOrcFileRewriter
         assertEquals(info.getRowCount(), 1);
 
         ConnectorPageSource source = storageManager.getPageSource(
-                FileSystemContext.DEFAULT_RAPTOR_CONTEXT,
+                DEFAULT_RAPTOR_CONTEXT,
+                DEFAULT_HIVE_FILE_CONTEXT,
                 uuid,
+                Optional.empty(),
+                false,
                 OptionalInt.empty(),
                 ImmutableList.of(3L, 7L, 8L),
                 ImmutableList.of(createVarcharType(5), createVarcharType(20), INTEGER),
@@ -692,7 +710,7 @@ public class TestOrcFileRewriter
         return new OrcFileWriter(
                 columnIds,
                 columnTypes,
-                new OutputStreamOrcDataSink(new FileOutputStream(file)),
+                new OutputStreamDataSink(new FileOutputStream(file)),
                 writeMetadata,
                 true,
                 new OrcWriterStats(),

@@ -15,6 +15,7 @@ package com.facebook.presto.benchmark;
 
 import com.facebook.airlift.stats.TestingGcMonitor;
 import com.facebook.presto.Session;
+import com.facebook.presto.common.Page;
 import com.facebook.presto.execution.TaskId;
 import com.facebook.presto.execution.TaskStateMachine;
 import com.facebook.presto.memory.MemoryPool;
@@ -24,7 +25,6 @@ import com.facebook.presto.metadata.QualifiedObjectName;
 import com.facebook.presto.operator.Driver;
 import com.facebook.presto.operator.TaskContext;
 import com.facebook.presto.plugin.memory.MemoryConnectorFactory;
-import com.facebook.presto.spi.Page;
 import com.facebook.presto.spi.Plugin;
 import com.facebook.presto.spi.QueryId;
 import com.facebook.presto.spi.TableHandle;
@@ -41,7 +41,6 @@ import org.intellij.lang.annotations.Language;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.OptionalInt;
 
 import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
 import static io.airlift.units.DataSize.Unit.GIGABYTE;
@@ -80,6 +79,7 @@ public class MemoryLocalQueryRunner
                 new QueryId("test"),
                 new DataSize(1, GIGABYTE),
                 new DataSize(2, GIGABYTE),
+                new DataSize(1, GIGABYTE),
                 memoryPool,
                 new TestingGcMonitor(),
                 localQueryRunner.getExecutor(),
@@ -92,7 +92,8 @@ public class MemoryLocalQueryRunner
                         localQueryRunner.getDefaultSession(),
                         false,
                         false,
-                        OptionalInt.empty(),
+                        false,
+                        false,
                         false);
 
         // Use NullOutputFactory to avoid coping out results to avoid affecting benchmark results

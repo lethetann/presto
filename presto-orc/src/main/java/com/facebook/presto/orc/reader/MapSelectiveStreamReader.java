@@ -13,16 +13,16 @@
  */
 package com.facebook.presto.orc.reader;
 
-import com.facebook.presto.memory.context.AggregatedMemoryContext;
+import com.facebook.presto.common.Subfield;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockLease;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.orc.OrcAggregatedMemoryContext;
 import com.facebook.presto.orc.StreamDescriptor;
 import com.facebook.presto.orc.TupleDomainFilter;
 import com.facebook.presto.orc.metadata.ColumnEncoding;
 import com.facebook.presto.orc.metadata.ColumnEncoding.ColumnEncodingKind;
 import com.facebook.presto.orc.stream.InputStreamSources;
-import com.facebook.presto.spi.Subfield;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockLease;
-import com.facebook.presto.spi.type.Type;
 import org.joda.time.DateTimeZone;
 import org.openjdk.jol.info.ClassLayout;
 
@@ -54,15 +54,16 @@ public class MapSelectiveStreamReader
             List<Subfield> requiredSubfields,
             Optional<Type> outputType,
             DateTimeZone hiveStorageTimeZone,
-            AggregatedMemoryContext systemMemoryContext)
+            boolean legacyMapSubscript,
+            OrcAggregatedMemoryContext systemMemoryContext)
     {
         this.streamDescriptor = requireNonNull(streamDescriptor, "stream is null");
-        directReader = new MapDirectSelectiveStreamReader(streamDescriptor, filters, requiredSubfields, outputType, hiveStorageTimeZone, systemMemoryContext);
-        flatReader = new MapFlatSelectiveStreamReader(streamDescriptor, filters, requiredSubfields, outputType, hiveStorageTimeZone, systemMemoryContext);
+        directReader = new MapDirectSelectiveStreamReader(streamDescriptor, filters, requiredSubfields, outputType, hiveStorageTimeZone, legacyMapSubscript, systemMemoryContext);
+        flatReader = new MapFlatSelectiveStreamReader(streamDescriptor, filters, requiredSubfields, outputType, hiveStorageTimeZone, legacyMapSubscript, systemMemoryContext);
     }
 
     @Override
-    public void startStripe(InputStreamSources dictionaryStreamSources, List<ColumnEncoding> encoding)
+    public void startStripe(InputStreamSources dictionaryStreamSources, Map<Integer, ColumnEncoding> encoding)
             throws IOException
     {
         ColumnEncodingKind kind = encoding.get(streamDescriptor.getStreamId())
@@ -136,8 +137,7 @@ public class MapSelectiveStreamReader
     @Override
     public void close()
     {
-        if (currentReader != null) {
-            currentReader.close();
-        }
+        directReader.close();
+        flatReader.close();
     }
 }

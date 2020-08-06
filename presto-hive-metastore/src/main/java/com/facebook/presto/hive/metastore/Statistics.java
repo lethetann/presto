@@ -13,18 +13,18 @@
  */
 package com.facebook.presto.hive.metastore;
 
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.type.DecimalType;
+import com.facebook.presto.common.type.SqlDate;
+import com.facebook.presto.common.type.SqlDecimal;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.hive.HiveBasicStatistics;
 import com.facebook.presto.spi.ConnectorSession;
-import com.facebook.presto.spi.Page;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.block.Block;
 import com.facebook.presto.spi.statistics.ColumnStatisticMetadata;
 import com.facebook.presto.spi.statistics.ColumnStatisticType;
 import com.facebook.presto.spi.statistics.ComputedStatistics;
-import com.facebook.presto.spi.type.DecimalType;
-import com.facebook.presto.spi.type.SqlDate;
-import com.facebook.presto.spi.type.SqlDecimal;
-import com.facebook.presto.spi.type.Type;
 import com.google.common.collect.ImmutableMap;
 import org.joda.time.DateTimeZone;
 
@@ -40,8 +40,16 @@ import java.util.OptionalDouble;
 import java.util.OptionalLong;
 import java.util.Set;
 
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.DateType.DATE;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.RealType.REAL;
+import static com.facebook.presto.common.type.SmallintType.SMALLINT;
+import static com.facebook.presto.common.type.TimestampType.TIMESTAMP;
+import static com.facebook.presto.common.type.TinyintType.TINYINT;
 import static com.facebook.presto.hive.HiveBasicStatistics.createZeroStatistics;
-import static com.facebook.presto.hive.MetastoreErrorCode.HIVE_UNKNOWN_COLUMN_STATISTIC_TYPE;
+import static com.facebook.presto.hive.HiveErrorCode.HIVE_UNKNOWN_COLUMN_STATISTIC_TYPE;
 import static com.facebook.presto.hive.metastore.MetastoreUtil.createPartitionValues;
 import static com.facebook.presto.hive.metastore.Statistics.ReduceOperator.ADD;
 import static com.facebook.presto.hive.metastore.Statistics.ReduceOperator.MAX;
@@ -53,14 +61,6 @@ import static com.facebook.presto.spi.statistics.ColumnStatisticType.NUMBER_OF_D
 import static com.facebook.presto.spi.statistics.ColumnStatisticType.NUMBER_OF_NON_NULL_VALUES;
 import static com.facebook.presto.spi.statistics.ColumnStatisticType.NUMBER_OF_TRUE_VALUES;
 import static com.facebook.presto.spi.statistics.ColumnStatisticType.TOTAL_SIZE_IN_BYTES;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.DateType.DATE;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
-import static com.facebook.presto.spi.type.RealType.REAL;
-import static com.facebook.presto.spi.type.SmallintType.SMALLINT;
-import static com.facebook.presto.spi.type.TimestampType.TIMESTAMP;
-import static com.facebook.presto.spi.type.TinyintType.TINYINT;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.ImmutableList.toImmutableList;
@@ -424,17 +424,17 @@ public final class Statistics
     private static OptionalLong getIntegerValue(ConnectorSession session, Type type, Block block)
     {
         // works for BIGINT as well as for other integer types TINYINT/SMALLINT/INTEGER that store values as byte/short/int
-        return block.isNull(0) ? OptionalLong.empty() : OptionalLong.of(((Number) type.getObjectValue(session, block, 0)).longValue());
+        return block.isNull(0) ? OptionalLong.empty() : OptionalLong.of(((Number) type.getObjectValue(session.getSqlFunctionProperties(), block, 0)).longValue());
     }
 
     private static OptionalDouble getDoubleValue(ConnectorSession session, Type type, Block block)
     {
-        return block.isNull(0) ? OptionalDouble.empty() : OptionalDouble.of(((Number) type.getObjectValue(session, block, 0)).doubleValue());
+        return block.isNull(0) ? OptionalDouble.empty() : OptionalDouble.of(((Number) type.getObjectValue(session.getSqlFunctionProperties(), block, 0)).doubleValue());
     }
 
     private static Optional<LocalDate> getDateValue(ConnectorSession session, Type type, Block block)
     {
-        return block.isNull(0) ? Optional.empty() : Optional.of(LocalDate.ofEpochDay(((SqlDate) type.getObjectValue(session, block, 0)).getDays()));
+        return block.isNull(0) ? Optional.empty() : Optional.of(LocalDate.ofEpochDay(((SqlDate) type.getObjectValue(session.getSqlFunctionProperties(), block, 0)).getDays()));
     }
 
     private static OptionalLong getTimestampValue(DateTimeZone timeZone, Block block)
@@ -445,7 +445,7 @@ public final class Statistics
 
     private static Optional<BigDecimal> getDecimalValue(ConnectorSession session, Type type, Block block)
     {
-        return block.isNull(0) ? Optional.empty() : Optional.of(((SqlDecimal) type.getObjectValue(session, block, 0)).toBigDecimal());
+        return block.isNull(0) ? Optional.empty() : Optional.of(((SqlDecimal) type.getObjectValue(session.getSqlFunctionProperties(), block, 0)).toBigDecimal());
     }
 
     public enum ReduceOperator

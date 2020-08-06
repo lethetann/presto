@@ -235,6 +235,16 @@ public class DriverContext
         return pipelineContext.isCpuTimerEnabled();
     }
 
+    public boolean isPerOperatorAllocationTrackingEnabled()
+    {
+        return pipelineContext.isPerOperatorAllocationTrackingEnabled();
+    }
+
+    public boolean isAllocationTrackingEnabled()
+    {
+        return pipelineContext.isAllocationTrackingEnabled();
+    }
+
     public CounterStat getInputDataSize()
     {
         OperatorContext inputOperator = getFirst(operatorContexts, null);
@@ -300,6 +310,7 @@ public class DriverContext
     {
         long totalScheduledTime = overallTiming.getWallNanos();
         long totalCpuTime = overallTiming.getCpuNanos();
+        long totalAllocation = overallTiming.getAllocationBytes();
 
         long totalBlockedTime = blockedWallNanos.get();
         BlockedMonitor blockedMonitor = this.blockedMonitor.get();
@@ -383,6 +394,7 @@ public class DriverContext
                 succinctNanos(totalBlockedTime),
                 blockedMonitor != null,
                 builder.build(),
+                succinctBytes(totalAllocation),
                 rawInputDataSize.convertToMostSuccinctDataSize(),
                 rawInputPositions,
                 rawInputReadTime,

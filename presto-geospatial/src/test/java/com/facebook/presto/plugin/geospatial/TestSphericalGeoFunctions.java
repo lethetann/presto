@@ -13,10 +13,12 @@
  */
 package com.facebook.presto.plugin.geospatial;
 
+import com.esri.core.geometry.Point;
+import com.esri.core.geometry.ogc.OGCPoint;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.operator.scalar.AbstractTestFunctions;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.type.Type;
 import com.google.common.collect.ImmutableList;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
@@ -29,10 +31,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.facebook.presto.metadata.FunctionExtractor.extractFunctions;
+import static com.facebook.presto.plugin.geospatial.SphericalGeoFunctions.toSphericalGeography;
 import static com.facebook.presto.plugin.geospatial.SphericalGeographyType.SPHERICAL_GEOGRAPHY;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
 import static io.airlift.slice.Slices.utf8Slice;
 import static java.lang.String.format;
 import static org.testng.Assert.assertEquals;
@@ -72,7 +75,7 @@ public class TestSphericalGeoFunctions
 
         BlockBuilder builder = SPHERICAL_GEOGRAPHY.createBlockBuilder(null, wktList.size());
         for (String wkt : wktList) {
-            SPHERICAL_GEOGRAPHY.writeSlice(builder, GeoFunctions.toSphericalGeography(GeoFunctions.stGeometryFromText(utf8Slice(wkt))));
+            SPHERICAL_GEOGRAPHY.writeSlice(builder, toSphericalGeography(GeoFunctions.stGeometryFromText(utf8Slice(wkt))));
         }
         Block block = builder.build();
         for (int i = 0; i < wktList.size(); i++) {
@@ -131,6 +134,29 @@ public class TestSphericalGeoFunctions
     private void assertInvalidLatitude(String wkt)
     {
         assertInvalidFunction(format("to_spherical_geography(ST_GeometryFromText('%s'))", wkt), "Latitude must be between -90 and 90");
+    }
+
+    @Test
+    public void testGreatCircleDistance()
+    {
+        assertFunction("great_circle_distance(36.12, -86.67, 33.94, -118.40)", DOUBLE, 2886.448973436703);
+        assertFunction("great_circle_distance(33.94, -118.40, 36.12, -86.67)", DOUBLE, 2886.448973436703);
+        assertFunction("great_circle_distance(42.3601, -71.0589, 42.4430, -71.2290)", DOUBLE, 16.73469743457461);
+        assertFunction("great_circle_distance(36.12, -86.67, 36.12, -86.67)", DOUBLE, 0.0);
+
+        assertInvalidFunction("great_circle_distance(100, 20, 30, 40)", "Latitude must be between -90 and 90");
+        assertInvalidFunction("great_circle_distance(10, 20, 300, 40)", "Latitude must be between -90 and 90");
+        assertInvalidFunction("great_circle_distance(10, 200, 30, 40)", "Longitude must be between -180 and 180");
+        assertInvalidFunction("great_circle_distance(10, 20, 30, 400)", "Longitude must be between -180 and 180");
+
+        assertInvalidFunction("great_circle_distance(nan(), -86.67, 33.94, -118.40)", "Latitude must be between -90 and 90");
+        assertInvalidFunction("great_circle_distance(infinity(), -86.67, 33.94, -118.40)", "Latitude must be between -90 and 90");
+        assertInvalidFunction("great_circle_distance(36.12, nan(), 33.94, -118.40)", "Longitude must be between -180 and 180");
+        assertInvalidFunction("great_circle_distance(36.12, infinity(), 33.94, -118.40)", "Longitude must be between -180 and 180");
+        assertInvalidFunction("great_circle_distance(36.12, -86.67, nan(), -118.40)", "Latitude must be between -90 and 90");
+        assertInvalidFunction("great_circle_distance(36.12, -86.67, infinity(), -118.40)", "Latitude must be between -90 and 90");
+        assertInvalidFunction("great_circle_distance(36.12, -86.67, 33.94, nan())", "Longitude must be between -180 and 180");
+        assertInvalidFunction("great_circle_distance(36.12, -86.67, 33.94, infinity())", "Longitude must be between -180 and 180");
     }
 
     @Test
@@ -229,6 +255,32 @@ public class TestSphericalGeoFunctions
 
         // Multi-linestring with adjacent paths is equivalent to a single linestring
         assertLength("MULTILINESTRING ((-71.05 42.36, -87.62 41.87), (-87.62 41.87, -122.41 37.77))", length);
+    }
+
+    @Test
+    public void testSTSphericalCentroid()
+    {
+        // Spherical centroid testing
+        assertSphericalCentroid("POINT (3 5)", new Point(3, 5));
+        assertSphericalCentroid("POINT EMPTY", null);
+        assertSphericalCentroid("MULTIPOINT EMPTY", null);
+        assertSphericalCentroid("MULTIPOINT (3 5)", new Point(3, 5));
+        assertSphericalCentroid("MULTIPOINT (0 -45, 0 45)", new Point(0, 0));
+        assertSphericalCentroid("MULTIPOINT (45 0, -45 0)", new Point(0, 0));
+        assertSphericalCentroid("MULTIPOINT (0 0, -180 0)", new Point(-90, 45));
+        assertSphericalCentroid("MULTIPOINT (0 -45, 0 45, 30 0)", new Point(12.36780515862267, 0));
+        assertSphericalCentroid("MULTIPOINT (0 -45, 0 45, 30 0, -30 0)", new Point(0, 0));
+    }
+
+    private void assertSphericalCentroid(String wkt, Point centroid)
+    {
+        String projection = format("ST_Centroid(to_spherical_geography(ST_GeometryFromText('%s')))", wkt);
+        if (centroid == null) {
+            assertFunction(projection, SPHERICAL_GEOGRAPHY, null);
+        }
+        else {
+            assertFunction(format("ST_AsText(%s)", projection), VARCHAR, new OGCPoint(centroid, null).asText());
+        }
     }
 
     private void assertLength(String lineString, Double expectedLength)

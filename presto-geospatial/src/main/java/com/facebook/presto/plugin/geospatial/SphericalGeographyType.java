@@ -13,11 +13,11 @@
  */
 package com.facebook.presto.plugin.geospatial;
 
-import com.facebook.presto.spi.ConnectorSession;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.type.AbstractVariableWidthType;
-import com.facebook.presto.spi.type.TypeSignature;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.function.SqlFunctionProperties;
+import com.facebook.presto.common.type.AbstractVariableWidthType;
+import com.facebook.presto.common.type.TypeSignature;
 import io.airlift.slice.Slice;
 
 import static com.facebook.presto.geospatial.serde.EsriGeometrySerde.deserialize;
@@ -69,7 +69,7 @@ public class SphericalGeographyType
     }
 
     @Override
-    public Object getObjectValue(ConnectorSession session, Block block, int position)
+    public Object getObjectValue(SqlFunctionProperties properties, Block block, int position)
     {
         if (block.isNull(position)) {
             return null;

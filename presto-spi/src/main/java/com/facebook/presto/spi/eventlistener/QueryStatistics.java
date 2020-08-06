@@ -22,6 +22,7 @@ import static java.util.Objects.requireNonNull;
 public class QueryStatistics
 {
     private final Duration cpuTime;
+    private final Duration retriedCpuTime;
     private final Duration wallTime;
     private final Duration queuedTime;
     private final Optional<Duration> analysisTime;
@@ -39,6 +40,7 @@ public class QueryStatistics
     private final long writtenOutputBytes;
     private final long writtenOutputRows;
     private final long writtenIntermediateBytes;
+    private final long spilledBytes;
 
     private final double cumulativeMemory;
 
@@ -54,6 +56,7 @@ public class QueryStatistics
 
     public QueryStatistics(
             Duration cpuTime,
+            Duration retriedCpuTime,
             Duration wallTime,
             Duration queuedTime,
             Optional<Duration> analysisTime,
@@ -69,6 +72,7 @@ public class QueryStatistics
             long writtenOutputBytes,
             long writtenOutputRows,
             long writtenIntermediateBytes,
+            long spilledBytes,
             double cumulativeMemory,
             List<StageGcStatistics> stageGcStatistics,
             int completedSplits,
@@ -78,6 +82,7 @@ public class QueryStatistics
             List<String> operatorSummaries)
     {
         this.cpuTime = requireNonNull(cpuTime, "cpuTime is null");
+        this.retriedCpuTime = requireNonNull(retriedCpuTime, "retriedCpuTime is null");
         this.wallTime = requireNonNull(wallTime, "wallTime is null");
         this.queuedTime = requireNonNull(queuedTime, "queuedTime is null");
         this.analysisTime = requireNonNull(analysisTime, "analysisTime is null");
@@ -93,6 +98,7 @@ public class QueryStatistics
         this.writtenOutputBytes = writtenOutputBytes;
         this.writtenOutputRows = writtenOutputRows;
         this.writtenIntermediateBytes = writtenIntermediateBytes;
+        this.spilledBytes = spilledBytes;
         this.cumulativeMemory = cumulativeMemory;
         this.stageGcStatistics = requireNonNull(stageGcStatistics, "stageGcStatistics is null");
         this.completedSplits = completedSplits;
@@ -105,6 +111,11 @@ public class QueryStatistics
     public Duration getCpuTime()
     {
         return cpuTime;
+    }
+
+    public Duration getRetriedCpuTime()
+    {
+        return retriedCpuTime;
     }
 
     public Duration getWallTime()
@@ -180,6 +191,11 @@ public class QueryStatistics
     public long getWrittenIntermediateBytes()
     {
         return writtenIntermediateBytes;
+    }
+
+    public long getSpilledBytes()
+    {
+        return spilledBytes;
     }
 
     public double getCumulativeMemory()

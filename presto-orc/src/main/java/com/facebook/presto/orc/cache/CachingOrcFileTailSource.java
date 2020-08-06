@@ -41,11 +41,14 @@ public class CachingOrcFileTailSource
     }
 
     @Override
-    public OrcFileTail getOrcFileTail(OrcDataSource orcDataSource, MetadataReader metadataReader, Optional<OrcWriteValidation> writeValidation)
+    public OrcFileTail getOrcFileTail(OrcDataSource orcDataSource, MetadataReader metadataReader, Optional<OrcWriteValidation> writeValidation, boolean cacheable)
             throws IOException
     {
         try {
-            return cache.get(orcDataSource.getId(), () -> delegate.getOrcFileTail(orcDataSource, metadataReader, writeValidation));
+            if (cacheable) {
+                return cache.get(orcDataSource.getId(), () -> delegate.getOrcFileTail(orcDataSource, metadataReader, writeValidation, cacheable));
+            }
+            return delegate.getOrcFileTail(orcDataSource, metadataReader, writeValidation, cacheable);
         }
         catch (ExecutionException | UncheckedExecutionException e) {
             throwIfInstanceOf(e.getCause(), IOException.class);

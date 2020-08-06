@@ -60,10 +60,10 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
 import static com.facebook.presto.matching.Pattern.nonEmpty;
 import static com.facebook.presto.spi.plan.AggregationNode.singleGroupingSet;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
 import static com.facebook.presto.sql.ExpressionUtils.and;
 import static com.facebook.presto.sql.ExpressionUtils.or;
 import static com.facebook.presto.sql.planner.plan.AssignmentUtils.identitiesAsSymbolReferences;
@@ -254,7 +254,8 @@ public class TransformCorrelatedInPredicateToJoin
                 Optional.of(castToRowExpression(joinExpression)),
                 Optional.empty(),
                 Optional.empty(),
-                Optional.empty());
+                Optional.empty(),
+                ImmutableMap.of());
     }
 
     private AggregationNode.Aggregation countWithFilter(Expression condition)

@@ -38,18 +38,19 @@ public class VerifierConfig
     private Optional<String> humanReadableEventLogFile = Optional.empty();
 
     private String testId;
+    private Optional<String> testName = Optional.empty();
     private int maxConcurrency = 10;
     private int suiteRepetitions = 1;
     private int queryRepetitions = 1;
 
     private double relativeErrorMargin = 1e-4;
     private double absoluteErrorMargin = 1e-12;
-    private boolean runTeardownOnResultMismatch;
-    private boolean runTeardownForDeterminismAnalysis;
-
-    private int maxDeterminismAnalysisRuns = 2;
-    private boolean enableLimitQueryDeterminismAnalyzer = true;
+    private boolean smartTeardown;
     private int verificationResubmissionLimit = 2;
+
+    private boolean setupOnMainClusters = true;
+    private boolean teardownOnMainClusters = true;
+    private boolean skipControl;
 
     @NotNull
     public Optional<Set<String>> getWhitelist()
@@ -145,11 +146,25 @@ public class VerifierConfig
         return testId;
     }
 
-    @ConfigDescription("A customizable string that will be logged with the results")
+    @ConfigDescription("A customizable string that will be passed into query client info and logged with the results")
     @Config("test-id")
     public VerifierConfig setTestId(String testId)
     {
         this.testId = testId;
+        return this;
+    }
+
+    @NotNull
+    public Optional<String> getTestName()
+    {
+        return testName;
+    }
+
+    @ConfigDescription("A customizable string that will be passed into query client info")
+    @Config("test-name")
+    public VerifierConfig setTestName(String testName)
+    {
+        this.testName = Optional.ofNullable(testName);
         return this;
     }
 
@@ -222,54 +237,16 @@ public class VerifierConfig
         return this;
     }
 
-    public boolean isRunTeardownOnResultMismatch()
+    public boolean isSmartTeardown()
     {
-        return runTeardownOnResultMismatch;
+        return smartTeardown;
     }
 
-    @ConfigDescription("When set to false, temporary tables are not dropped in case of checksum failure")
-    @Config("run-teardown-on-result-mismatch")
-    public VerifierConfig setRunTeardownOnResultMismatch(boolean runTeardownOnResultMismatch)
+    @ConfigDescription("When set to false, temporary tables are not dropped if verification fails and both control and test query succeeds")
+    @Config("smart-teardown")
+    public VerifierConfig setSmartTeardown(boolean smartTeardown)
     {
-        this.runTeardownOnResultMismatch = runTeardownOnResultMismatch;
-        return this;
-    }
-
-    public boolean isRunTeardownForDeterminismAnalysis()
-    {
-        return runTeardownForDeterminismAnalysis;
-    }
-
-    @ConfigDescription("When set to false, temporary tables are not dropped for determinism analysis runs")
-    @Config("run-teardown-for-determinism-analysis")
-    public VerifierConfig setRunTeardownForDeterminismAnalysis(boolean runTeardownForDeterminismAnalysis)
-    {
-        this.runTeardownForDeterminismAnalysis = runTeardownForDeterminismAnalysis;
-        return this;
-    }
-
-    @Min(0)
-    public int getMaxDeterminismAnalysisRuns()
-    {
-        return maxDeterminismAnalysisRuns;
-    }
-
-    @Config("max-determinism-analysis-runs")
-    public VerifierConfig setMaxDeterminismAnalysisRuns(int maxDeterminismAnalysisRuns)
-    {
-        this.maxDeterminismAnalysisRuns = maxDeterminismAnalysisRuns;
-        return this;
-    }
-
-    public boolean isEnableLimitQueryDeterminismAnalyzer()
-    {
-        return enableLimitQueryDeterminismAnalyzer;
-    }
-
-    @Config("enable-limit-query-determinism-analyzer")
-    public VerifierConfig setEnableLimitQueryDeterminismAnalyzer(boolean enableLimitQueryDeterminismAnalyzer)
-    {
-        this.enableLimitQueryDeterminismAnalyzer = enableLimitQueryDeterminismAnalyzer;
+        this.smartTeardown = smartTeardown;
         return this;
     }
 
@@ -284,6 +261,45 @@ public class VerifierConfig
     public VerifierConfig setVerificationResubmissionLimit(int verificationResubmissionLimit)
     {
         this.verificationResubmissionLimit = verificationResubmissionLimit;
+        return this;
+    }
+
+    public boolean isSetupOnMainClusters()
+    {
+        return setupOnMainClusters;
+    }
+
+    @ConfigDescription("If true, run control/test setup queries on control/test clusters. Otherwise, run setup queries on the help cluster.")
+    @Config("setup-on-main-clusters")
+    public VerifierConfig setSetupOnMainClusters(boolean setupOnMainClusters)
+    {
+        this.setupOnMainClusters = setupOnMainClusters;
+        return this;
+    }
+
+    public boolean isTeardownOnMainClusters()
+    {
+        return teardownOnMainClusters;
+    }
+
+    @ConfigDescription("If true, run control/test teardown queries on control/test clusters. Otherwise, run teardown queries on the help cluster.")
+    @Config("teardown-on-main-clusters")
+    public VerifierConfig setTeardownOnMainClusters(boolean teardownOnMainClusters)
+    {
+        this.teardownOnMainClusters = teardownOnMainClusters;
+        return this;
+    }
+
+    public boolean isSkipControl()
+    {
+        return skipControl;
+    }
+
+    @ConfigDescription("Skip control queries and result comparison, only run test queries.")
+    @Config("skip-control")
+    public VerifierConfig setSkipControl(boolean skipControl)
+    {
+        this.skipControl = skipControl;
         return this;
     }
 }

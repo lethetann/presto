@@ -13,17 +13,18 @@
  */
 package com.facebook.presto;
 
+import com.facebook.presto.common.function.SqlFunctionProperties;
+import com.facebook.presto.common.type.TimeZoneKey;
 import com.facebook.presto.metadata.SessionPropertyManager;
 import com.facebook.presto.security.AccessControl;
 import com.facebook.presto.spi.ConnectorId;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.QueryId;
-import com.facebook.presto.spi.function.SqlFunctionProperties;
+import com.facebook.presto.spi.security.AccessControlContext;
 import com.facebook.presto.spi.security.Identity;
 import com.facebook.presto.spi.security.SelectedRole;
 import com.facebook.presto.spi.session.ResourceEstimates;
-import com.facebook.presto.spi.type.TimeZoneKey;
 import com.facebook.presto.sql.tree.Execute;
 import com.facebook.presto.transaction.TransactionId;
 import com.facebook.presto.transaction.TransactionManager;
@@ -44,6 +45,7 @@ import java.util.Set;
 import java.util.TimeZone;
 import java.util.stream.Collectors;
 
+import static com.facebook.presto.SystemSessionProperties.isLegacyMapSubscript;
 import static com.facebook.presto.SystemSessionProperties.isLegacyRowFieldOrdinalAccessEnabled;
 import static com.facebook.presto.SystemSessionProperties.isLegacyTimestamp;
 import static com.facebook.presto.SystemSessionProperties.isParseDecimalLiteralsAsDouble;
@@ -79,6 +81,7 @@ public final class Session
     private final Map<String, Map<String, String>> unprocessedCatalogProperties;
     private final SessionPropertyManager sessionPropertyManager;
     private final Map<String, String> preparedStatements;
+    private final AccessControlContext context;
 
     public Session(
             QueryId queryId,
@@ -138,6 +141,7 @@ public final class Session
         checkArgument(!transactionId.isPresent() || unprocessedCatalogProperties.isEmpty(), "Catalog session properties cannot be set if there is an open transaction");
 
         checkArgument(catalog.isPresent() || !schema.isPresent(), "schema is set but catalog is not");
+        this.context = new AccessControlContext(queryId, clientInfo, source);
     }
 
     public QueryId getQueryId()
@@ -273,6 +277,11 @@ public final class Session
         return sql;
     }
 
+    public AccessControlContext getAccessControlContext()
+    {
+        return context;
+    }
+
     public Session beginTransactionId(TransactionId transactionId, TransactionManager transactionManager, AccessControl accessControl)
     {
         requireNonNull(transactionId, "transactionId is null");
@@ -282,7 +291,7 @@ public final class Session
 
         for (Entry<String, String> property : systemProperties.entrySet()) {
             // verify permissions
-            accessControl.checkCanSetSystemSessionProperty(identity, property.getKey());
+            accessControl.checkCanSetSystemSessionProperty(identity, context, property.getKey());
 
             // validate session property value
             sessionPropertyManager.validateSystemSessionProperty(property.getKey(), property.getValue());
@@ -302,7 +311,7 @@ public final class Session
 
             for (Entry<String, String> property : catalogProperties.entrySet()) {
                 // verify permissions
-                accessControl.checkCanSetCatalogSessionProperty(transactionId, identity, catalogName, property.getKey());
+                accessControl.checkCanSetCatalogSessionProperty(transactionId, identity, context, catalogName, property.getKey());
 
                 // validate session property value
                 sessionPropertyManager.validateCatalogSessionProperty(connectorId, catalogName, property.getKey(), property.getValue());
@@ -320,7 +329,7 @@ public final class Session
                     .getConnectorId();
 
             if (role.getType() == SelectedRole.Type.ROLE) {
-                accessControl.checkCanSetRole(transactionId, identity, role.getRole().get(), catalogName);
+                accessControl.checkCanSetRole(transactionId, identity, context, role.getRole().get(), catalogName);
             }
             roles.put(connectorId.getCatalogName(), role);
 
@@ -339,7 +348,12 @@ public final class Session
                 queryId,
                 Optional.of(transactionId),
                 clientTransactionSupport,
-                new Identity(identity.getUser(), identity.getPrincipal(), roles.build(), identity.getExtraCredentials()),
+                new Identity(
+                        identity.getUser(),
+                        identity.getPrincipal(),
+                        roles.build(),
+                        identity.getExtraCredentials(),
+                        identity.getExtraAuthenticators()),
                 source,
                 catalog,
                 schema,
@@ -419,7 +433,11 @@ public final class Session
                 .setTimeZoneKey(timeZoneKey)
                 .setLegacyRowFieldOrdinalAccessEnabled(isLegacyRowFieldOrdinalAccessEnabled(this))
                 .setLegacyTimestamp(isLegacyTimestamp(this))
+                .setLegacyMapSubscript(isLegacyMapSubscript(this))
                 .setParseDecimalLiteralAsDouble(isParseDecimalLiteralsAsDouble(this))
+                .setSessionStartTime(getStartTime())
+                .setSessionLocale(getLocale())
+                .setSessionUser(getUser())
                 .build();
     }
 
@@ -707,6 +725,7 @@ public final class Session
         private Optional<Duration> executionTime = Optional.empty();
         private Optional<Duration> cpuTime = Optional.empty();
         private Optional<DataSize> peakMemory = Optional.empty();
+        private Optional<DataSize> peakTaskMemory = Optional.empty();
 
         public ResourceEstimateBuilder setExecutionTime(Duration executionTime)
         {
@@ -726,9 +745,15 @@ public final class Session
             return this;
         }
 
+        public ResourceEstimateBuilder setPeakTaskMemory(DataSize peakTaskMemory)
+        {
+            this.peakTaskMemory = Optional.of(peakTaskMemory);
+            return this;
+        }
+
         public ResourceEstimates build()
         {
-            return new ResourceEstimates(executionTime, cpuTime, peakMemory);
+            return new ResourceEstimates(executionTime, cpuTime, peakMemory, peakTaskMemory);
         }
     }
 }

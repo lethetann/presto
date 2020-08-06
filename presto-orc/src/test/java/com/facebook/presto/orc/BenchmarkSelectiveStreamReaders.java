@@ -13,24 +13,24 @@
  */
 package com.facebook.presto.orc;
 
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.Subfield;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.type.DecimalType;
+import com.facebook.presto.common.type.Decimals;
+import com.facebook.presto.common.type.SqlDate;
+import com.facebook.presto.common.type.SqlDecimal;
+import com.facebook.presto.common.type.SqlTimestamp;
+import com.facebook.presto.common.type.TimeZoneKey;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeSignature;
+import com.facebook.presto.common.type.VarcharType;
 import com.facebook.presto.orc.TupleDomainFilter.BigintRange;
 import com.facebook.presto.orc.TupleDomainFilter.BooleanValue;
 import com.facebook.presto.orc.TupleDomainFilter.BytesRange;
 import com.facebook.presto.orc.TupleDomainFilter.DoubleRange;
 import com.facebook.presto.orc.TupleDomainFilter.FloatRange;
 import com.facebook.presto.orc.cache.StorageOrcFileTailSource;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.Subfield;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.type.DecimalType;
-import com.facebook.presto.spi.type.Decimals;
-import com.facebook.presto.spi.type.SqlDate;
-import com.facebook.presto.spi.type.SqlDecimal;
-import com.facebook.presto.spi.type.SqlTimestamp;
-import com.facebook.presto.spi.type.TimeZoneKey;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeSignature;
-import com.facebook.presto.spi.type.VarcharType;
 import com.facebook.presto.type.TypeRegistry;
 import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
@@ -65,23 +65,24 @@ import java.util.Random;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.IntStream;
 
-import static com.facebook.presto.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.DateType.DATE;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.RealType.REAL;
+import static com.facebook.presto.common.type.SmallintType.SMALLINT;
+import static com.facebook.presto.common.type.TimestampType.TIMESTAMP;
+import static com.facebook.presto.common.type.TinyintType.TINYINT;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
+import static com.facebook.presto.orc.DwrfEncryptionProvider.NO_ENCRYPTION;
+import static com.facebook.presto.orc.NoopOrcAggregatedMemoryContext.NOOP_ORC_AGGREGATED_MEMORY_CONTEXT;
 import static com.facebook.presto.orc.OrcEncoding.ORC;
 import static com.facebook.presto.orc.OrcReader.INITIAL_BATCH_SIZE;
 import static com.facebook.presto.orc.OrcTester.Format.ORC_12;
 import static com.facebook.presto.orc.OrcTester.writeOrcColumnHive;
 import static com.facebook.presto.orc.TupleDomainFilter.LongDecimalRange;
 import static com.facebook.presto.orc.metadata.CompressionKind.NONE;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.DateType.DATE;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
-import static com.facebook.presto.spi.type.RealType.REAL;
-import static com.facebook.presto.spi.type.SmallintType.SMALLINT;
-import static com.facebook.presto.spi.type.TimestampType.TIMESTAMP;
-import static com.facebook.presto.spi.type.TinyintType.TINYINT;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
 import static com.google.common.io.Files.createTempDir;
 import static com.google.common.io.MoreFiles.deleteRecursively;
 import static com.google.common.io.RecursiveDeleteOption.ALLOW_INSECURE;
@@ -100,8 +101,8 @@ import static org.joda.time.DateTimeZone.UTC;
 @BenchmarkMode(Mode.AverageTime)
 public class BenchmarkSelectiveStreamReaders
 {
-    public static final int ROWS = 10_000_000;
-    public static final List<?> NULL_VALUES = Collections.nCopies(ROWS, null);
+    private static final int ROWS = 10_000_000;
+    private static final List<?> NULL_VALUES = Collections.nCopies(ROWS, null);
     private static final DecimalType SHORT_DECIMAL_TYPE = DecimalType.createDecimalType(10, 5);
     private static final DecimalType LONG_DECIMAL_TYPE = DecimalType.createDecimalType(30, 10);
     private static final int MAX_STRING_LENGTH = 10;
@@ -138,7 +139,7 @@ public class BenchmarkSelectiveStreamReaders
             }
 
             if (page.getPositionCount() > 0) {
-                blocks.add(page.getBlock(0));
+                blocks.add(page.getBlock(0).getLoadedBlock());
             }
         }
         return blocks;
@@ -195,7 +196,10 @@ public class BenchmarkSelectiveStreamReaders
                     ORC,
                     new StorageOrcFileTailSource(),
                     new StorageStripeMetadataSource(),
-                    OrcReaderTestingUtils.createDefaultTestConfig());
+                    NOOP_ORC_AGGREGATED_MEMORY_CONTEXT,
+                    OrcReaderTestingUtils.createDefaultTestConfig(),
+                    false,
+                    NO_ENCRYPTION);
 
             return orcReader.createSelectiveRecordReader(
                     ImmutableMap.of(0, type),
@@ -210,9 +214,11 @@ public class BenchmarkSelectiveStreamReaders
                     0,
                     dataSource.getSize(),
                     UTC, // arbitrary
-                    newSimpleAggregatedMemoryContext(),
+                    true,
+                    new TestingHiveOrcAggregatedMemoryContext(),
                     Optional.empty(),
-                    INITIAL_BATCH_SIZE);
+                    INITIAL_BATCH_SIZE,
+                    ImmutableMap.of());
         }
     }
 

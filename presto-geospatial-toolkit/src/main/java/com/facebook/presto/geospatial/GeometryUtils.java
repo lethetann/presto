@@ -18,12 +18,16 @@ import com.esri.core.geometry.Geometry;
 import com.esri.core.geometry.GeometryCursor;
 import com.esri.core.geometry.GeometryEngine;
 import com.esri.core.geometry.MultiVertexGeometry;
+import com.esri.core.geometry.Operator;
 import com.esri.core.geometry.Point;
 import com.esri.core.geometry.Polygon;
+import com.esri.core.geometry.ogc.OGCConcreteGeometryCollection;
 import com.esri.core.geometry.ogc.OGCGeometry;
+import com.esri.core.geometry.ogc.OGCGeometryCollection;
 import com.esri.core.geometry.ogc.OGCPoint;
 import com.esri.core.geometry.ogc.OGCPolygon;
 import com.facebook.presto.spi.PrestoException;
+import com.google.common.collect.ImmutableList;
 import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.CoordinateSequence;
 import org.locationtech.jts.geom.CoordinateSequenceFactory;
@@ -32,11 +36,21 @@ import org.locationtech.jts.geom.impl.PackedCoordinateSequenceFactory;
 import org.locationtech.jts.io.ParseException;
 import org.locationtech.jts.io.WKTReader;
 import org.locationtech.jts.io.WKTWriter;
+import org.locationtech.jts.operation.IsSimpleOp;
+import org.locationtech.jts.operation.valid.IsValidOp;
+import org.locationtech.jts.operation.valid.TopologyValidationError;
 
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.HashSet;
+import java.util.Iterator;
+import java.util.NoSuchElementException;
+import java.util.Optional;
 import java.util.Set;
 
 import static com.facebook.presto.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
+import static java.lang.String.format;
+import static java.util.Objects.requireNonNull;
 
 public final class GeometryUtils
 {
@@ -54,16 +68,6 @@ public final class GeometryUtils
     private static double translateFromAVNaN(double n)
     {
         return n < -1.0E38D ? (0.0D / 0.0) : n;
-    }
-
-    /**
-     * Copy of com.esri.core.geometry.Interop.translateToAVNaN
-     * <p>
-     * JtsGeometrySerde#serialize must serialize NaN's the same way ESRI library does to achieve binary compatibility
-     */
-    public static double translateToAVNaN(double n)
-    {
-        return (Double.isNaN(n)) ? -Double.MAX_VALUE : n;
     }
 
     public static boolean isEsriNaN(double d)
@@ -275,5 +279,129 @@ public final class GeometryUtils
     public static org.locationtech.jts.geom.Geometry createJtsEmptyPolygon()
     {
         return GEOMETRY_FACTORY.createPolygon();
+    }
+
+    public static Optional<String> getGeometryInvalidReason(org.locationtech.jts.geom.Geometry geometry)
+    {
+        IsValidOp validOp = new IsValidOp(geometry);
+        IsSimpleOp simpleOp = new IsSimpleOp(geometry);
+        try {
+            TopologyValidationError err = validOp.getValidationError();
+            if (err != null) {
+                return Optional.of(err.getMessage());
+            }
+        }
+        catch (UnsupportedOperationException e) {
+            // This is thrown if the type of geometry is unsupported by JTS.
+            // It should not happen in practice.
+            throw new PrestoException(INVALID_FUNCTION_ARGUMENT, "Geometry type not valid", e);
+        }
+        if (!simpleOp.isSimple()) {
+            String errorDescription;
+            String geometryType = geometry.getGeometryType();
+            switch (GeometryType.getForJtsGeometryType(geometryType)) {
+                case POINT:
+                    errorDescription = "Invalid point";
+                    break;
+                case MULTI_POINT:
+                    errorDescription = "Repeated point";
+                    break;
+                case LINE_STRING:
+                case MULTI_LINE_STRING:
+                    errorDescription = "Self-intersection at or near";
+                    break;
+                case POLYGON:
+                case MULTI_POLYGON:
+                case GEOMETRY_COLLECTION:
+                    // In OGC (which JTS follows): Polygons, MultiPolygons, Geometry Collections are simple.
+                    // This shouldn't happen, but in case it does, return a reasonable generic message.
+                    errorDescription = "Topology exception at or near";
+                    break;
+                default:
+                    throw new PrestoException(INVALID_FUNCTION_ARGUMENT, format("Unknown geometry type: %s", geometryType));
+            }
+            org.locationtech.jts.geom.Coordinate nonSimpleLocation = simpleOp.getNonSimpleLocation();
+            return Optional.of(format("[%s] %s: (%s %s)", geometryType, errorDescription, nonSimpleLocation.getX(), nonSimpleLocation.getY()));
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * Recursively flatten GeometryCollection in geometry.
+     *
+     * If `geometry` is null, return an empty iterable.
+     * If `geometry` is not a GeometryCollection, yield a single geometry.
+     * (For this, MultiX is not considered a GeometryCollection.)
+     * Otherwise, iterate through all children of the GeometryCollection,
+     * recursively flattening contained GeometryCollections.
+     */
+    public static Iterable<OGCGeometry> flattenCollection(OGCGeometry geometry)
+    {
+        if (geometry == null) {
+            return ImmutableList.of();
+        }
+        if (!(geometry instanceof OGCConcreteGeometryCollection)) {
+            return ImmutableList.of(geometry);
+        }
+        if (((OGCConcreteGeometryCollection) geometry).numGeometries() == 0) {
+            return ImmutableList.of();
+        }
+        return () -> new GeometryCollectionIterator(geometry);
+    }
+
+    public static void accelerateGeometry(OGCGeometry ogcGeometry, Operator relateOperator)
+    {
+        accelerateGeometry(ogcGeometry, relateOperator, Geometry.GeometryAccelerationDegree.enumMild);
+    }
+
+    public static void accelerateGeometry(
+            OGCGeometry ogcGeometry,
+            Operator relateOperator,
+            Geometry.GeometryAccelerationDegree accelerationDegree)
+    {
+        // Recurse into GeometryCollections
+        GeometryCursor cursor = ogcGeometry.getEsriGeometryCursor();
+        while (true) {
+            Geometry esriGeometry = cursor.next();
+            if (esriGeometry == null) {
+                break;
+            }
+            relateOperator.accelerateGeometry(esriGeometry, null, accelerationDegree);
+        }
+    }
+
+    private static class GeometryCollectionIterator
+            implements Iterator<OGCGeometry>
+    {
+        private final Deque<OGCGeometry> geometriesDeque = new ArrayDeque<>();
+
+        GeometryCollectionIterator(OGCGeometry geometries)
+        {
+            geometriesDeque.push(requireNonNull(geometries, "geometries is null"));
+        }
+
+        @Override
+        public boolean hasNext()
+        {
+            if (geometriesDeque.isEmpty()) {
+                return false;
+            }
+            while (geometriesDeque.peek() instanceof OGCConcreteGeometryCollection) {
+                OGCGeometryCollection collection = (OGCGeometryCollection) geometriesDeque.pop();
+                for (int i = 0; i < collection.numGeometries(); i++) {
+                    geometriesDeque.push(collection.geometryN(i));
+                }
+            }
+            return !geometriesDeque.isEmpty();
+        }
+
+        @Override
+        public OGCGeometry next()
+        {
+            if (!hasNext()) {
+                throw new NoSuchElementException("Geometries have been consumed");
+            }
+            return geometriesDeque.pop();
+        }
     }
 }

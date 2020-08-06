@@ -49,7 +49,7 @@ public class FunctionInvokerProvider
     {
         BuiltInScalarFunctionImplementation builtInScalarFunctionImplementation = functionManager.getBuiltInScalarFunctionImplementation(functionHandle);
         for (ScalarImplementationChoice choice : builtInScalarFunctionImplementation.getAllChoices()) {
-            if (checkChoice(choice.getArgumentProperties(), choice.isNullable(), choice.hasSession(), invocationConvention)) {
+            if (checkChoice(choice.getArgumentProperties(), choice.isNullable(), choice.hasProperties(), invocationConvention)) {
                 return new FunctionInvoker(choice.getMethodHandle());
             }
         }
@@ -63,7 +63,6 @@ public class FunctionInvokerProvider
         for (int i = 0; i < definitionArgumentProperties.size(); i++) {
             InvocationArgumentConvention invocationArgumentConvention = invocationConvention.get().getArgumentConvention(i);
             NullConvention nullConvention = definitionArgumentProperties.get(i).getNullConvention();
-
             // return false because function types do not have a null convention
             if (definitionArgumentProperties.get(i).getArgumentType() == FUNCTION_TYPE) {
                 if (invocationArgumentConvention != InvocationArgumentConvention.FUNCTION) {

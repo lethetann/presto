@@ -15,13 +15,15 @@ package com.facebook.presto.operator.scalar;
 
 import com.facebook.airlift.json.JsonCodec;
 import com.facebook.presto.client.FailureInfo;
+import com.facebook.presto.common.type.StandardTypes;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.StandardErrorCode;
 import com.facebook.presto.spi.function.Description;
 import com.facebook.presto.spi.function.ScalarFunction;
 import com.facebook.presto.spi.function.SqlType;
-import com.facebook.presto.spi.type.StandardTypes;
 import io.airlift.slice.Slice;
+
+import static com.facebook.presto.spi.function.SqlFunctionVisibility.HIDDEN;
 
 public final class FailureFunction
 {
@@ -31,7 +33,7 @@ public final class FailureFunction
 
     // We shouldn't be using UNKNOWN as an explicit type. This will be fixed when we fix type inference
     @Description("Decodes json to an exception and throws it")
-    @ScalarFunction(value = "fail", hidden = true)
+    @ScalarFunction(value = "fail", visibility = HIDDEN)
     @SqlType("unknown")
     public static boolean failWithException(@SqlType(StandardTypes.JSON) Slice failureInfoSlice)
     {
@@ -42,7 +44,7 @@ public final class FailureFunction
 
     // This function is only used to propagate optimization failures.
     @Description("Decodes json to an exception and throws it with supplied errorCode")
-    @ScalarFunction(value = "fail", hidden = true)
+    @ScalarFunction(value = "fail", visibility = HIDDEN)
     @SqlType("unknown")
     public static boolean failWithException(
             @SqlType(StandardTypes.INTEGER) long errorCode,
@@ -59,7 +61,7 @@ public final class FailureFunction
     }
 
     @Description("Throws an exception with a given message")
-    @ScalarFunction(value = "fail", hidden = true)
+    @ScalarFunction(value = "fail", visibility = HIDDEN)
     @SqlType("unknown")
     public static boolean fail(@SqlType(StandardTypes.VARCHAR) Slice message)
     {
@@ -67,7 +69,7 @@ public final class FailureFunction
     }
 
     @Description("Throws an exception with a given error code and message")
-    @ScalarFunction(value = "fail", hidden = true)
+    @ScalarFunction(value = "fail", visibility = HIDDEN)
     @SqlType("unknown")
     public static boolean fail(
             @SqlType(StandardTypes.INTEGER) long errorCode,

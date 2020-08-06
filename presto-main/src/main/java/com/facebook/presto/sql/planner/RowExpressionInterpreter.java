@@ -15,15 +15,22 @@ package com.facebook.presto.sql.planner;
 
 import com.facebook.airlift.json.JsonCodec;
 import com.facebook.presto.client.FailureInfo;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.block.RowBlockBuilder;
+import com.facebook.presto.common.function.OperatorType;
+import com.facebook.presto.common.type.ArrayType;
+import com.facebook.presto.common.type.FunctionType;
+import com.facebook.presto.common.type.RowType;
+import com.facebook.presto.common.type.StandardTypes;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeManager;
+import com.facebook.presto.common.type.TypeSignature;
 import com.facebook.presto.metadata.FunctionManager;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.block.RowBlockBuilder;
 import com.facebook.presto.spi.function.FunctionHandle;
 import com.facebook.presto.spi.function.FunctionMetadata;
-import com.facebook.presto.spi.function.OperatorType;
 import com.facebook.presto.spi.function.SqlInvokedScalarFunctionImplementation;
 import com.facebook.presto.spi.relation.CallExpression;
 import com.facebook.presto.spi.relation.ConstantExpression;
@@ -33,13 +40,6 @@ import com.facebook.presto.spi.relation.RowExpression;
 import com.facebook.presto.spi.relation.RowExpressionVisitor;
 import com.facebook.presto.spi.relation.SpecialFormExpression;
 import com.facebook.presto.spi.relation.VariableReferenceExpression;
-import com.facebook.presto.spi.type.ArrayType;
-import com.facebook.presto.spi.type.FunctionType;
-import com.facebook.presto.spi.type.RowType;
-import com.facebook.presto.spi.type.StandardTypes;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeManager;
-import com.facebook.presto.spi.type.TypeSignature;
 import com.facebook.presto.sql.InterpretedFunctionInvoker;
 import com.facebook.presto.sql.planner.Interpreters.LambdaVariableResolver;
 import com.facebook.presto.sql.relational.FunctionResolution;
@@ -59,12 +59,23 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Stream;
 
+import static com.facebook.presto.common.function.OperatorType.EQUAL;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.JsonType.JSON;
+import static com.facebook.presto.common.type.StandardTypes.ARRAY;
+import static com.facebook.presto.common.type.StandardTypes.MAP;
+import static com.facebook.presto.common.type.StandardTypes.ROW;
+import static com.facebook.presto.common.type.TypeSignature.parseTypeSignature;
+import static com.facebook.presto.common.type.TypeUtils.writeNativeValue;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
+import static com.facebook.presto.common.type.VarcharType.createVarcharType;
+import static com.facebook.presto.expressions.DynamicFilters.isDynamicFilter;
 import static com.facebook.presto.metadata.CastType.CAST;
 import static com.facebook.presto.metadata.CastType.JSON_TO_ARRAY_CAST;
 import static com.facebook.presto.metadata.CastType.JSON_TO_MAP_CAST;
 import static com.facebook.presto.metadata.CastType.JSON_TO_ROW_CAST;
 import static com.facebook.presto.spi.function.FunctionKind.SCALAR;
-import static com.facebook.presto.spi.function.OperatorType.EQUAL;
 import static com.facebook.presto.spi.relation.ExpressionOptimizer.Level;
 import static com.facebook.presto.spi.relation.ExpressionOptimizer.Level.EVALUATED;
 import static com.facebook.presto.spi.relation.ExpressionOptimizer.Level.SERIALIZABLE;
@@ -80,15 +91,6 @@ import static com.facebook.presto.spi.relation.SpecialFormExpression.Form.OR;
 import static com.facebook.presto.spi.relation.SpecialFormExpression.Form.ROW_CONSTRUCTOR;
 import static com.facebook.presto.spi.relation.SpecialFormExpression.Form.SWITCH;
 import static com.facebook.presto.spi.relation.SpecialFormExpression.Form.WHEN;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
-import static com.facebook.presto.spi.type.StandardTypes.ARRAY;
-import static com.facebook.presto.spi.type.StandardTypes.MAP;
-import static com.facebook.presto.spi.type.StandardTypes.ROW;
-import static com.facebook.presto.spi.type.TypeSignature.parseTypeSignature;
-import static com.facebook.presto.spi.type.TypeUtils.writeNativeValue;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
-import static com.facebook.presto.spi.type.VarcharType.createVarcharType;
 import static com.facebook.presto.sql.analyzer.TypeSignatureProvider.fromTypes;
 import static com.facebook.presto.sql.gen.VarArgsToMapAdapterGenerator.generateVarArgsToMapAdapter;
 import static com.facebook.presto.sql.planner.Interpreters.interpretDereference;
@@ -100,7 +102,6 @@ import static com.facebook.presto.sql.planner.RowExpressionInterpreter.SpecialCa
 import static com.facebook.presto.sql.relational.Expressions.call;
 import static com.facebook.presto.sql.relational.Expressions.constant;
 import static com.facebook.presto.sql.relational.SqlFunctionUtils.getSqlFunctionRowExpression;
-import static com.facebook.presto.type.JsonType.JSON;
 import static com.facebook.presto.type.LikeFunctions.isLikePattern;
 import static com.facebook.presto.type.LikeFunctions.unescapeLiteralLikePattern;
 import static com.facebook.presto.type.UnknownType.UNKNOWN;
@@ -259,14 +260,17 @@ public class RowExpressionInterpreter
 
             // do not optimize non-deterministic functions
             if (optimizationLevel.ordinal() < EVALUATED.ordinal() &&
-                    (!functionMetadata.isDeterministic() || hasUnresolvedValue(argumentValues) || resolution.isFailFunction(functionHandle))) {
+                    (!functionMetadata.isDeterministic() ||
+                            hasUnresolvedValue(argumentValues) ||
+                            isDynamicFilter(node) ||
+                            resolution.isFailFunction(functionHandle))) {
                 return call(node.getDisplayName(), functionHandle, node.getType(), toRowExpressions(argumentValues, node.getArguments()));
             }
 
             Object value;
             switch (functionMetadata.getImplementationType()) {
                 case BUILTIN:
-                    value = functionInvoker.invoke(functionHandle, session, argumentValues);
+                    value = functionInvoker.invoke(functionHandle, session.getSqlFunctionProperties(), argumentValues);
                     break;
                 case SQL:
                     SqlInvokedScalarFunctionImplementation functionImplementation = (SqlInvokedScalarFunctionImplementation) functionManager.getScalarFunctionImplementation(functionHandle);
@@ -323,21 +327,20 @@ public class RowExpressionInterpreter
                 case IF: {
                     checkArgument(node.getArguments().size() == 3);
                     Object condition = processWithExceptionHandling(node.getArguments().get(0), context);
-                    Object trueValue = processWithExceptionHandling(node.getArguments().get(1), context);
-                    Object falseValue = processWithExceptionHandling(node.getArguments().get(2), context);
 
                     if (condition instanceof RowExpression) {
                         return new SpecialFormExpression(
                                 IF,
                                 node.getType(),
                                 toRowExpression(condition, node.getArguments().get(0)),
-                                toRowExpression(trueValue, node.getArguments().get(1)),
-                                toRowExpression(falseValue, node.getArguments().get(2)));
+                                toRowExpression(processWithExceptionHandling(node.getArguments().get(1), context), node.getArguments().get(1)),
+                                toRowExpression(processWithExceptionHandling(node.getArguments().get(2), context), node.getArguments().get(2)));
                     }
                     else if (Boolean.TRUE.equals(condition)) {
-                        return trueValue;
+                        return processWithExceptionHandling(node.getArguments().get(1), context);
                     }
-                    return falseValue;
+
+                    return processWithExceptionHandling(node.getArguments().get(2), context);
                 }
                 case NULL_IF: {
                     checkArgument(node.getArguments().size() == 2);
@@ -370,8 +373,8 @@ public class RowExpressionInterpreter
                             EQUAL,
                             ImmutableList.of(commonType, commonType),
                             ImmutableList.of(
-                                    functionInvoker.invoke(firstCast, session, left),
-                                    functionInvoker.invoke(secondCast, session, right))));
+                                    functionInvoker.invoke(firstCast, session.getSqlFunctionProperties(), left),
+                                    functionInvoker.invoke(secondCast, session.getSqlFunctionProperties(), right))));
 
                     if (equal) {
                         return null;
@@ -605,50 +608,52 @@ public class RowExpressionInterpreter
                     return insertArguments((MethodHandle) values.get(values.size() - 1), 0, values.subList(0, values.size() - 1).toArray());
                 }
                 case SWITCH: {
-                    Object value = processWithExceptionHandling(node.getArguments().get(0), context);
-
                     List<RowExpression> whenClauses;
-                    Object elseValue;
+                    Object elseValue = null;
                     RowExpression last = node.getArguments().get(node.getArguments().size() - 1);
                     if (last instanceof SpecialFormExpression && ((SpecialFormExpression) last).getForm().equals(WHEN)) {
                         whenClauses = node.getArguments().subList(1, node.getArguments().size());
-                        elseValue = null;
                     }
                     else {
                         whenClauses = node.getArguments().subList(1, node.getArguments().size() - 1);
-                        elseValue = processWithExceptionHandling(last, context);
-                    }
-
-                    if (value == null) {
-                        return elseValue;
                     }
 
                     List<RowExpression> simplifiedWhenClauses = new ArrayList<>();
-                    for (RowExpression whenClause : whenClauses) {
-                        checkArgument(whenClause instanceof SpecialFormExpression && ((SpecialFormExpression) whenClause).getForm().equals(WHEN));
+                    Object value = processWithExceptionHandling(node.getArguments().get(0), context);
+                    if (value != null) {
+                        for (RowExpression whenClause : whenClauses) {
+                            checkArgument(whenClause instanceof SpecialFormExpression && ((SpecialFormExpression) whenClause).getForm().equals(WHEN));
 
-                        RowExpression operand = ((SpecialFormExpression) whenClause).getArguments().get(0);
-                        RowExpression result = ((SpecialFormExpression) whenClause).getArguments().get(1);
+                            RowExpression operand = ((SpecialFormExpression) whenClause).getArguments().get(0);
+                            RowExpression result = ((SpecialFormExpression) whenClause).getArguments().get(1);
 
-                        Object operandValue = processWithExceptionHandling(operand, context);
-                        Object resultValue = processWithExceptionHandling(result, context);
+                            Object operandValue = processWithExceptionHandling(operand, context);
 
-                        // call equals(value, operand)
-                        if (operandValue instanceof RowExpression || value instanceof RowExpression) {
-                            // cannot fully evaluate, add updated whenClause
-                            simplifiedWhenClauses.add(new SpecialFormExpression(WHEN, whenClause.getType(), toRowExpression(operandValue, operand), toRowExpression(resultValue, result)));
-                        }
-                        else if (operandValue != null) {
-                            Boolean isEqual = (Boolean) invokeOperator(
-                                    EQUAL,
-                                    ImmutableList.of(node.getArguments().get(0).getType(), operand.getType()),
-                                    ImmutableList.of(value, operandValue));
-                            if (isEqual != null && isEqual) {
-                                // condition is true, use this as elseValue
-                                elseValue = resultValue;
-                                break;
+                            // call equals(value, operand)
+                            if (operandValue instanceof RowExpression || value instanceof RowExpression) {
+                                // cannot fully evaluate, add updated whenClause
+                                simplifiedWhenClauses.add(new SpecialFormExpression(WHEN, whenClause.getType(), toRowExpression(operandValue, operand), toRowExpression(processWithExceptionHandling(result, context), result)));
+                            }
+                            else if (operandValue != null) {
+                                Boolean isEqual = (Boolean) invokeOperator(
+                                        EQUAL,
+                                        ImmutableList.of(node.getArguments().get(0).getType(), operand.getType()),
+                                        ImmutableList.of(value, operandValue));
+                                if (isEqual != null && isEqual) {
+                                    if (simplifiedWhenClauses.isEmpty()) {
+                                        // this is the left-most true predicate. So return it.
+                                        return processWithExceptionHandling(result, context);
+                                    }
+
+                                    elseValue = processWithExceptionHandling(result, context);
+                                    break; // Done we found the last match. Don't need to go any further.
+                                }
                             }
                         }
+                    }
+
+                    if (elseValue == null) {
+                        elseValue = processWithExceptionHandling(last, context);
                     }
 
                     if (simplifiedWhenClauses.isEmpty()) {
@@ -658,7 +663,7 @@ public class RowExpressionInterpreter
                     ImmutableList.Builder<RowExpression> argumentsBuilder = ImmutableList.builder();
                     argumentsBuilder.add(toRowExpression(value, node.getArguments().get(0)))
                             .addAll(simplifiedWhenClauses)
-                            .add(toRowExpression(elseValue, node.getArguments().get(node.getArguments().size() - 1)));
+                            .add(toRowExpression(elseValue, last));
                     return new SpecialFormExpression(SWITCH, node.getType(), argumentsBuilder.build());
                 }
                 default:
@@ -688,7 +693,7 @@ public class RowExpressionInterpreter
 
             String failureInfo = JsonCodec.jsonCodec(FailureInfo.class).toJson(Failures.toFailure(exception).toFailureInfo());
             FunctionHandle jsonParse = metadata.getFunctionManager().lookupFunction("json_parse", fromTypes(VARCHAR));
-            Object json = functionInvoker.invoke(jsonParse, session, utf8Slice(failureInfo));
+            Object json = functionInvoker.invoke(jsonParse, session.getSqlFunctionProperties(), utf8Slice(failureInfo));
             FunctionHandle cast = metadata.getFunctionManager().lookupCast(CAST, UNKNOWN.getTypeSignature(), type.getTypeSignature());
             if (exception instanceof PrestoException) {
                 long errorCode = ((PrestoException) exception).getErrorCode().getCode();
@@ -713,7 +718,7 @@ public class RowExpressionInterpreter
         private Object invokeOperator(OperatorType operatorType, List<? extends Type> argumentTypes, List<Object> argumentValues)
         {
             FunctionHandle operatorHandle = metadata.getFunctionManager().resolveOperator(operatorType, fromTypes(argumentTypes));
-            return functionInvoker.invoke(operatorHandle, session, argumentValues);
+            return functionInvoker.invoke(operatorHandle, session.getSqlFunctionProperties(), argumentValues);
         }
 
         private List<RowExpression> toRowExpressions(List<Object> values, List<RowExpression> unchangedValues)
@@ -845,11 +850,12 @@ public class RowExpressionInterpreter
             checkArgument(resolution.isLikeFunction(callExpression.getFunctionHandle()));
             checkArgument(callExpression.getArguments().size() == 2);
             RowExpression likePatternExpression = callExpression.getArguments().get(1);
-            checkArgument(
-                    (likePatternExpression instanceof CallExpression &&
-                            (((CallExpression) likePatternExpression).getFunctionHandle().equals(resolution.likePatternFunction()) ||
-                                    (resolution.isCastFunction(((CallExpression) likePatternExpression).getFunctionHandle())))),
-                    "expect a like_pattern function or a cast function");
+            if (!(likePatternExpression instanceof CallExpression &&
+                    (((CallExpression) likePatternExpression).getFunctionHandle().equals(resolution.likePatternFunction()) ||
+                            (resolution.isCastFunction(((CallExpression) likePatternExpression).getFunctionHandle()))))) {
+                // expression was already optimized
+                return notChanged();
+            }
             Object value = argumentValues.get(0);
             Object possibleCompiledPattern = argumentValues.get(1);
 
@@ -883,8 +889,19 @@ public class RowExpressionInterpreter
                 if (possibleCompiledPattern == null) {
                     return changed(null);
                 }
-                checkState((resolution.isCastFunction(((CallExpression) possibleCompiledPattern).getFunctionHandle())));
-                possibleCompiledPattern = functionInvoker.invoke(((CallExpression) possibleCompiledPattern).getFunctionHandle(), session, nonCompiledPattern);
+
+                checkState(possibleCompiledPattern instanceof CallExpression);
+                // this corresponds to ExpressionInterpreter::getConstantPattern
+                if (hasEscape) {
+                    // like_pattern(pattern, escape)
+                    possibleCompiledPattern = functionInvoker.invoke(((CallExpression) possibleCompiledPattern).getFunctionHandle(), session.getSqlFunctionProperties(), nonCompiledPattern, escape);
+                }
+                else {
+                    // like_pattern(pattern)
+                    possibleCompiledPattern = functionInvoker.invoke(((CallExpression) possibleCompiledPattern).getFunctionHandle(), session.getSqlFunctionProperties(), nonCompiledPattern);
+                }
+
+                checkState(possibleCompiledPattern instanceof Regex, "unexpected like pattern type " + possibleCompiledPattern.getClass());
                 return changed(interpretLikePredicate(argumentTypes.get(0), (Slice) value, (Regex) possibleCompiledPattern));
             }
 

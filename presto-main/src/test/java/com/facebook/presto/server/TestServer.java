@@ -23,9 +23,9 @@ import com.facebook.airlift.json.JsonCodec;
 import com.facebook.airlift.testing.Closeables;
 import com.facebook.presto.client.QueryError;
 import com.facebook.presto.client.QueryResults;
+import com.facebook.presto.common.type.TimeZoneNotSupportedException;
 import com.facebook.presto.server.testing.TestingPrestoServer;
 import com.facebook.presto.spi.QueryId;
-import com.facebook.presto.spi.type.TimeZoneNotSupportedException;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import org.testng.annotations.AfterMethod;
@@ -38,6 +38,7 @@ import java.util.List;
 import static com.facebook.airlift.http.client.FullJsonResponseHandler.createFullJsonResponseHandler;
 import static com.facebook.airlift.http.client.JsonResponseHandler.createJsonResponseHandler;
 import static com.facebook.airlift.http.client.Request.Builder.prepareGet;
+import static com.facebook.airlift.http.client.Request.Builder.prepareHead;
 import static com.facebook.airlift.http.client.Request.Builder.preparePost;
 import static com.facebook.airlift.http.client.StaticBodyGenerator.createStaticBodyGenerator;
 import static com.facebook.airlift.http.client.StatusResponseHandler.createStatusResponseHandler;
@@ -57,6 +58,8 @@ import static com.facebook.presto.client.PrestoHeaders.PRESTO_TRANSACTION_ID;
 import static com.facebook.presto.client.PrestoHeaders.PRESTO_USER;
 import static com.facebook.presto.spi.StandardErrorCode.INCOMPATIBLE_CLIENT;
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static javax.ws.rs.core.HttpHeaders.CONTENT_TYPE;
+import static javax.ws.rs.core.MediaType.APPLICATION_JSON;
 import static javax.ws.rs.core.Response.Status.OK;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertNotNull;
@@ -106,9 +109,6 @@ public class TestServer
         assertNotNull(queryError);
 
         TimeZoneNotSupportedException expected = new TimeZoneNotSupportedException(invalidTimeZone);
-        assertEquals(queryError.getErrorCode(), expected.getErrorCode().getCode());
-        assertEquals(queryError.getErrorName(), expected.getErrorCode().getName());
-        assertEquals(queryError.getErrorType(), expected.getErrorCode().getType().name());
         assertEquals(queryError.getMessage(), expected.getMessage());
     }
 
@@ -218,6 +218,18 @@ public class TestServer
 
         assertNotNull(queryResults.getError());
         assertEquals(queryResults.getError().getErrorCode(), INCOMPATIBLE_CLIENT.toErrorCode().getCode());
+    }
+
+    @Test
+    public void testStatusPing()
+    {
+        Request request = prepareHead()
+                .setUri(uriFor("/v1/status"))
+                .setFollowRedirects(false)
+                .build();
+        StatusResponseHandler.StatusResponse response = client.execute(request, createStatusResponseHandler());
+        assertEquals(response.getStatusCode(), OK.getStatusCode(), "Status code");
+        assertEquals(response.getHeader(CONTENT_TYPE), APPLICATION_JSON, "Content Type");
     }
 
     public URI uriFor(String path)

@@ -13,12 +13,12 @@
  */
 package com.facebook.presto.sql.gen;
 
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.relation.Predicate;
 import com.facebook.presto.metadata.Metadata;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
 import com.facebook.presto.spi.relation.InputReferenceExpression;
-import com.facebook.presto.spi.relation.Predicate;
 import com.facebook.presto.spi.relation.PredicateCompiler;
 import com.facebook.presto.spi.relation.RowExpression;
 import com.facebook.presto.sql.relational.FunctionResolution;
@@ -27,13 +27,13 @@ import org.testng.annotations.Test;
 
 import java.util.Arrays;
 
+import static com.facebook.presto.common.function.OperatorType.GREATER_THAN_OR_EQUAL;
+import static com.facebook.presto.common.function.OperatorType.LESS_THAN;
+import static com.facebook.presto.common.function.OperatorType.MULTIPLY;
+import static com.facebook.presto.common.function.OperatorType.SUBTRACT;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
 import static com.facebook.presto.metadata.MetadataManager.createTestMetadataManager;
-import static com.facebook.presto.spi.function.OperatorType.GREATER_THAN_OR_EQUAL;
-import static com.facebook.presto.spi.function.OperatorType.LESS_THAN;
-import static com.facebook.presto.spi.function.OperatorType.MULTIPLY;
-import static com.facebook.presto.spi.function.OperatorType.SUBTRACT;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
 import static com.facebook.presto.sql.relational.Expressions.call;
 import static com.facebook.presto.sql.relational.Expressions.constant;
 import static com.facebook.presto.testing.TestingConnectorSession.SESSION;
@@ -71,11 +71,11 @@ public class TestRowExpressionPredicateCompiler
         assertEquals(Arrays.asList(1, 0), Ints.asList(compiledSum.getInputChannels()));
 
         Page page = new Page(bBlock, aBlock);
-        assertFalse(compiledSum.evaluate(SESSION, page, 0));
-        assertFalse(compiledSum.evaluate(SESSION, page, 1));
-        assertTrue(compiledSum.evaluate(SESSION, page, 2));
-        assertTrue(compiledSum.evaluate(SESSION, page, 3));
-        assertFalse(compiledSum.evaluate(SESSION, page, 4));
+        assertFalse(compiledSum.evaluate(SESSION.getSqlFunctionProperties(), page, 0));
+        assertFalse(compiledSum.evaluate(SESSION.getSqlFunctionProperties(), page, 1));
+        assertTrue(compiledSum.evaluate(SESSION.getSqlFunctionProperties(), page, 2));
+        assertTrue(compiledSum.evaluate(SESSION.getSqlFunctionProperties(), page, 3));
+        assertFalse(compiledSum.evaluate(SESSION.getSqlFunctionProperties(), page, 4));
 
         // b * 2 < 10
         RowExpression timesTwo = call(
@@ -89,11 +89,11 @@ public class TestRowExpressionPredicateCompiler
         assertEquals(Arrays.asList(1), Ints.asList(compiledTimesTwo.getInputChannels()));
 
         page = new Page(bBlock);
-        assertTrue(compiledTimesTwo.evaluate(SESSION, page, 0));
-        assertTrue(compiledTimesTwo.evaluate(SESSION, page, 1));
-        assertFalse(compiledTimesTwo.evaluate(SESSION, page, 2));
-        assertFalse(compiledTimesTwo.evaluate(SESSION, page, 3));
-        assertTrue(compiledTimesTwo.evaluate(SESSION, page, 4));
+        assertTrue(compiledTimesTwo.evaluate(SESSION.getSqlFunctionProperties(), page, 0));
+        assertTrue(compiledTimesTwo.evaluate(SESSION.getSqlFunctionProperties(), page, 1));
+        assertFalse(compiledTimesTwo.evaluate(SESSION.getSqlFunctionProperties(), page, 2));
+        assertFalse(compiledTimesTwo.evaluate(SESSION.getSqlFunctionProperties(), page, 3));
+        assertTrue(compiledTimesTwo.evaluate(SESSION.getSqlFunctionProperties(), page, 4));
     }
 
     @Test

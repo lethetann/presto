@@ -21,7 +21,7 @@ public interface BlockEncodingBuffer
     /**
      * Pass in the decoded block and positions in this block to copy. Called when a new page is being processed.
      */
-    void setupDecodedBlocksAndPositions(DecodedBlockNode decodedBlockNode, int[] positions, int positionCount);
+    void setupDecodedBlocksAndPositions(DecodedBlockNode decodedBlockNode, int[] positions, int positionCount, int partitionBufferCapacity, long estimatedSerializedPageSize);
 
     /**
      * Adds serialized row sizes to serializedRowSizes array. Called for top level columns.
@@ -47,6 +47,11 @@ public interface BlockEncodingBuffer
      * Reset the BlockEncodingBuffer to its initial state. The next incoming page will be appended from the beginning.
      */
     void resetBuffers();
+
+    /**
+     * Signals that this is the last batch in this page, so that the internal buffers in BlockEncodingBuffers can recycled.
+     */
+    void noMoreBatches();
 
     long getRetainedSizeInBytes();
 

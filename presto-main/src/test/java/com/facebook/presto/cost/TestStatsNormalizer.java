@@ -14,11 +14,11 @@
 package com.facebook.presto.cost;
 
 import com.facebook.presto.block.BlockEncodingManager;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeManager;
 import com.facebook.presto.metadata.FunctionManager;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.relation.VariableReferenceExpression;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeManager;
 import com.facebook.presto.sql.analyzer.FeaturesConfig;
 import com.facebook.presto.testing.TestingConnectorSession;
 import com.facebook.presto.type.TypeRegistry;
@@ -27,15 +27,15 @@ import org.testng.annotations.Test;
 
 import java.time.LocalDate;
 
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.DateType.DATE;
+import static com.facebook.presto.common.type.DecimalType.createDecimalType;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.SmallintType.SMALLINT;
+import static com.facebook.presto.common.type.TinyintType.TINYINT;
 import static com.facebook.presto.cost.StatsUtil.toStatsRepresentation;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.DateType.DATE;
-import static com.facebook.presto.spi.type.DecimalType.createDecimalType;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
-import static com.facebook.presto.spi.type.SmallintType.SMALLINT;
-import static com.facebook.presto.spi.type.TinyintType.TINYINT;
 import static java.lang.Double.NaN;
 import static java.util.Collections.emptyList;
 
@@ -53,10 +53,12 @@ public class TestStatsNormalizer
         VariableReferenceExpression a = new VariableReferenceExpression("a", BIGINT);
         PlanNodeStatsEstimate estimate = PlanNodeStatsEstimate.builder()
                 .setOutputRowCount(30)
+                .setTotalSize(120)
                 .addVariableStatistics(a, VariableStatsEstimate.builder().setDistinctValuesCount(20).build())
                 .build();
 
         assertNormalized(estimate)
+                .totalSize(120)
                 .variableStats(a, variableAssert -> variableAssert.distinctValuesCount(20));
     }
 
@@ -68,12 +70,14 @@ public class TestStatsNormalizer
         VariableReferenceExpression c = new VariableReferenceExpression("c", BIGINT);
         PlanNodeStatsEstimate estimate = PlanNodeStatsEstimate.builder()
                 .setOutputRowCount(40)
+                .setTotalSize(160)
                 .addVariableStatistics(a, VariableStatsEstimate.builder().setDistinctValuesCount(20).build())
                 .addVariableStatistics(b, VariableStatsEstimate.builder().setDistinctValuesCount(30).build())
                 .addVariableStatistics(c, VariableStatsEstimate.unknown())
                 .build();
 
         PlanNodeStatsAssertion.assertThat(normalizer.normalize(estimate, ImmutableList.of(b, c)))
+                .totalSize(160)
                 .variablesWithKnownStats(b)
                 .variableStats(b, variableAssert -> variableAssert.distinctValuesCount(30));
     }
@@ -89,9 +93,11 @@ public class TestStatsNormalizer
                 .addVariableStatistics(b, VariableStatsEstimate.builder().setNullsFraction(0.4).setDistinctValuesCount(20).build())
                 .addVariableStatistics(c, VariableStatsEstimate.unknown())
                 .setOutputRowCount(10)
+                .setTotalSize(40)
                 .build();
 
         assertNormalized(estimate)
+                .totalSize(40)
                 .variableStats(a, variableAssert -> variableAssert.distinctValuesCount(10))
                 .variableStats(b, variableAssert -> variableAssert.distinctValuesCount(8))
                 .variableStats(c, VariableStatsAssertion::distinctValuesCountUnknown);
@@ -138,9 +144,11 @@ public class TestStatsNormalizer
                 .build();
         PlanNodeStatsEstimate estimate = PlanNodeStatsEstimate.builder()
                 .setOutputRowCount(10000000000L)
+                .setTotalSize(40000000000L)
                 .addVariableStatistics(variable, symbolStats).build();
 
         assertNormalized(estimate)
+                .totalSize(40000000000L)
                 .variableStats(variable, variableAssert -> variableAssert.distinctValuesCount(expectedNormalizedNdv));
     }
 

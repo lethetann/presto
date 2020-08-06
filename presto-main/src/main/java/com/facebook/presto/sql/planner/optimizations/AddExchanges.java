@@ -14,6 +14,7 @@
 package com.facebook.presto.sql.planner.optimizations;
 
 import com.facebook.presto.Session;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.connector.system.GlobalSystemConnector;
 import com.facebook.presto.execution.QueryManagerConfig.ExchangeMaterializationStrategy;
 import com.facebook.presto.execution.warnings.WarningCollector;
@@ -24,8 +25,10 @@ import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.SortingProperty;
 import com.facebook.presto.spi.plan.AggregationNode;
 import com.facebook.presto.spi.plan.Assignments;
+import com.facebook.presto.spi.plan.DistinctLimitNode;
 import com.facebook.presto.spi.plan.FilterNode;
 import com.facebook.presto.spi.plan.LimitNode;
+import com.facebook.presto.spi.plan.MarkDistinctNode;
 import com.facebook.presto.spi.plan.PlanNode;
 import com.facebook.presto.spi.plan.PlanNodeIdAllocator;
 import com.facebook.presto.spi.plan.ProjectNode;
@@ -35,11 +38,9 @@ import com.facebook.presto.spi.plan.UnionNode;
 import com.facebook.presto.spi.plan.ValuesNode;
 import com.facebook.presto.spi.relation.RowExpression;
 import com.facebook.presto.spi.relation.VariableReferenceExpression;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.sql.analyzer.FeaturesConfig.AggregationPartitioningMergingStrategy;
 import com.facebook.presto.sql.analyzer.FeaturesConfig.PartialMergePushdownStrategy;
 import com.facebook.presto.sql.parser.SqlParser;
-import com.facebook.presto.sql.planner.ExpressionDomainTranslator;
-import com.facebook.presto.sql.planner.LiteralEncoder;
 import com.facebook.presto.sql.planner.Partitioning;
 import com.facebook.presto.sql.planner.PartitioningHandle;
 import com.facebook.presto.sql.planner.PartitioningScheme;
@@ -48,7 +49,6 @@ import com.facebook.presto.sql.planner.TypeProvider;
 import com.facebook.presto.sql.planner.optimizations.PreferredProperties.PartitioningProperties;
 import com.facebook.presto.sql.planner.plan.ApplyNode;
 import com.facebook.presto.sql.planner.plan.ChildReplacer;
-import com.facebook.presto.sql.planner.plan.DistinctLimitNode;
 import com.facebook.presto.sql.planner.plan.EnforceSingleRowNode;
 import com.facebook.presto.sql.planner.plan.ExchangeNode;
 import com.facebook.presto.sql.planner.plan.ExchangeNode.Scope;
@@ -59,7 +59,6 @@ import com.facebook.presto.sql.planner.plan.IndexSourceNode;
 import com.facebook.presto.sql.planner.plan.InternalPlanVisitor;
 import com.facebook.presto.sql.planner.plan.JoinNode;
 import com.facebook.presto.sql.planner.plan.LateralJoinNode;
-import com.facebook.presto.sql.planner.plan.MarkDistinctNode;
 import com.facebook.presto.sql.planner.plan.OutputNode;
 import com.facebook.presto.sql.planner.plan.RowNumberNode;
 import com.facebook.presto.sql.planner.plan.SemiJoinNode;
@@ -84,6 +83,7 @@ import com.google.common.collect.ListMultimap;
 import com.google.common.collect.SetMultimap;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -93,6 +93,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
 
+import static com.facebook.presto.SystemSessionProperties.getAggregationPartitioningMergingStrategy;
 import static com.facebook.presto.SystemSessionProperties.getExchangeMaterializationStrategy;
 import static com.facebook.presto.SystemSessionProperties.getHashPartitionCount;
 import static com.facebook.presto.SystemSessionProperties.getPartialMergePushdownStrategy;
@@ -100,9 +101,12 @@ import static com.facebook.presto.SystemSessionProperties.getPartitioningProvide
 import static com.facebook.presto.SystemSessionProperties.isColocatedJoinEnabled;
 import static com.facebook.presto.SystemSessionProperties.isDistributedIndexJoinEnabled;
 import static com.facebook.presto.SystemSessionProperties.isDistributedSortEnabled;
+import static com.facebook.presto.SystemSessionProperties.isExactPartitioningPreferred;
 import static com.facebook.presto.SystemSessionProperties.isForceSingleNodeOutput;
+import static com.facebook.presto.SystemSessionProperties.isPreferDistributedUnion;
 import static com.facebook.presto.SystemSessionProperties.isRedistributeWrites;
 import static com.facebook.presto.SystemSessionProperties.isScaleWriters;
+import static com.facebook.presto.SystemSessionProperties.isUseStreamingExchangeForMarkDistinctEnabled;
 import static com.facebook.presto.SystemSessionProperties.preferStreamingOperators;
 import static com.facebook.presto.expressions.LogicalRowExpressions.TRUE_CONSTANT;
 import static com.facebook.presto.operator.aggregation.AggregationUtils.hasSingleNodeExecutionPreference;
@@ -143,12 +147,10 @@ public class AddExchanges
 {
     private final SqlParser parser;
     private final Metadata metadata;
-    private final ExpressionDomainTranslator domainTranslator;
 
     public AddExchanges(Metadata metadata, SqlParser parser)
     {
         this.metadata = metadata;
-        this.domainTranslator = new ExpressionDomainTranslator(new LiteralEncoder(metadata.getBlockEncodingSerde()));
         this.parser = parser;
     }
 
@@ -170,6 +172,7 @@ public class AddExchanges
         private final boolean preferStreamingOperators;
         private final boolean redistributeWrites;
         private final boolean scaleWriters;
+        private final boolean preferDistributedUnion;
         private final PartialMergePushdownStrategy partialMergePushdownStrategy;
         private final String partitioningProviderCatalog;
         private final int hashPartitionCount;
@@ -184,6 +187,7 @@ public class AddExchanges
             this.distributedIndexJoins = isDistributedIndexJoinEnabled(session);
             this.redistributeWrites = isRedistributeWrites(session);
             this.scaleWriters = isScaleWriters(session);
+            this.preferDistributedUnion = isPreferDistributedUnion(session);
             this.partialMergePushdownStrategy = getPartialMergePushdownStrategy(session);
             this.preferStreamingOperators = preferStreamingOperators(session);
             this.partitioningProviderCatalog = getPartitioningProviderCatalog(session);
@@ -240,11 +244,20 @@ public class AddExchanges
             Set<VariableReferenceExpression> partitioningRequirement = ImmutableSet.copyOf(node.getGroupingKeys());
 
             boolean preferSingleNode = hasSingleNodeExecutionPreference(node, metadata.getFunctionManager());
+            boolean hasMixedGroupingSets = node.hasEmptyGroupingSet() && node.hasNonEmptyGroupingSet();
             PreferredProperties preferredProperties = preferSingleNode ? PreferredProperties.undistributed() : PreferredProperties.any();
 
-            if (!node.getGroupingKeys().isEmpty()) {
+            // If aggregation has a mixed of non-global and global grouping set, an repartition exchange is any way needed to eliminate duplicate default outputs
+            // from partial aggregations (enforced in `ValidateAggregationWithDefaultValues.java`). Therefore, we don't have preference on what the child will return.
+            if (!node.getGroupingKeys().isEmpty() && !hasMixedGroupingSets) {
+                AggregationPartitioningMergingStrategy aggregationPartitioningMergingStrategy = getAggregationPartitioningMergingStrategy(session);
                 preferredProperties = PreferredProperties.partitionedWithLocal(partitioningRequirement, grouped(node.getGroupingKeys()))
-                        .mergeWithParent(parentPreferredProperties);
+                        .mergeWithParent(parentPreferredProperties, shouldAggregationMergePartitionPreferences(aggregationPartitioningMergingStrategy));
+
+                if (aggregationPartitioningMergingStrategy.isAdoptingMergedPreference()) {
+                    checkState(preferredProperties.getGlobalProperties().isPresent() && preferredProperties.getGlobalProperties().get().getPartitioningProperties().isPresent());
+                    partitioningRequirement = ImmutableSet.copyOf(preferredProperties.getGlobalProperties().get().getPartitioningProperties().get().getPartitioningColumns());
+                }
             }
 
             PlanWithProperties child = planChild(node, preferredProperties);
@@ -259,13 +272,14 @@ public class AddExchanges
                         gatheringExchange(idAllocator.getNextId(), REMOTE_STREAMING, child.getNode()),
                         child.getProperties());
             }
-            else if (!child.getProperties().isStreamPartitionedOn(partitioningRequirement) && !child.getProperties().isNodePartitionedOn(partitioningRequirement)) {
+            else if (hasMixedGroupingSets
+                    || !isStreamPartitionedOn(child.getProperties(), partitioningRequirement) && !isNodePartitionedOn(child.getProperties(), partitioningRequirement)) {
                 child = withDerivedProperties(
                         partitionedExchange(
                                 idAllocator.getNextId(),
                                 selectExchangeScopeForPartitionedRemoteExchange(child.getNode(), false),
                                 child.getNode(),
-                                createPartitioning(node.getGroupingKeys()),
+                                createPartitioning(partitioningRequirement),
                                 node.getHashVariable()),
                         child.getProperties());
             }
@@ -299,15 +313,17 @@ public class AddExchanges
         public PlanWithProperties visitMarkDistinct(MarkDistinctNode node, PreferredProperties preferredProperties)
         {
             PreferredProperties preferredChildProperties = PreferredProperties.partitionedWithLocal(ImmutableSet.copyOf(node.getDistinctVariables()), grouped(node.getDistinctVariables()))
-                    .mergeWithParent(preferredProperties);
+                    .mergeWithParent(preferredProperties, !isExactPartitioningPreferred(session));
             PlanWithProperties child = node.getSource().accept(this, preferredChildProperties);
 
             if (child.getProperties().isSingleNode() ||
-                    !child.getProperties().isStreamPartitionedOn(node.getDistinctVariables())) {
+                    !isStreamPartitionedOn(child.getProperties(), node.getDistinctVariables())) {
                 child = withDerivedProperties(
                         partitionedExchange(
                                 idAllocator.getNextId(),
-                                selectExchangeScopeForPartitionedRemoteExchange(child.getNode(), false),
+                                isUseStreamingExchangeForMarkDistinctEnabled(session) ?
+                                        REMOTE_STREAMING :
+                                        selectExchangeScopeForPartitionedRemoteExchange(child.getNode(), false),
                                 child.getNode(),
                                 createPartitioning(node.getDistinctVariables()),
                                 node.getHashVariable()),
@@ -332,10 +348,10 @@ public class AddExchanges
             PlanWithProperties child = planChild(
                     node,
                     PreferredProperties.partitionedWithLocal(ImmutableSet.copyOf(node.getPartitionBy()), desiredProperties)
-                            .mergeWithParent(preferredProperties));
+                            .mergeWithParent(preferredProperties, !isExactPartitioningPreferred(session)));
 
-            if (!child.getProperties().isStreamPartitionedOn(node.getPartitionBy()) &&
-                    !child.getProperties().isNodePartitionedOn(node.getPartitionBy())) {
+            if (!isStreamPartitionedOn(child.getProperties(), node.getPartitionBy()) &&
+                    !isNodePartitionedOn(child.getProperties(), node.getPartitionBy())) {
                 if (node.getPartitionBy().isEmpty()) {
                     child = withDerivedProperties(
                             gatheringExchange(idAllocator.getNextId(), REMOTE_STREAMING, child.getNode()),
@@ -374,11 +390,11 @@ public class AddExchanges
             PlanWithProperties child = planChild(
                     node,
                     PreferredProperties.partitionedWithLocal(ImmutableSet.copyOf(node.getPartitionBy()), grouped(node.getPartitionBy()))
-                            .mergeWithParent(preferredProperties));
+                            .mergeWithParent(preferredProperties, !isExactPartitioningPreferred(session)));
 
             // TODO: add config option/session property to force parallel plan if child is unpartitioned and window has a PARTITION BY clause
-            if (!child.getProperties().isStreamPartitionedOn(node.getPartitionBy())
-                    && !child.getProperties().isNodePartitionedOn(node.getPartitionBy())) {
+            if (!isStreamPartitionedOn(child.getProperties(), node.getPartitionBy())
+                    && !isNodePartitionedOn(child.getProperties(), node.getPartitionBy())) {
                 child = withDerivedProperties(
                         partitionedExchange(
                                 idAllocator.getNextId(),
@@ -406,7 +422,7 @@ public class AddExchanges
             }
             else {
                 preferredChildProperties = PreferredProperties.partitionedWithLocal(ImmutableSet.copyOf(node.getPartitionBy()), grouped(node.getPartitionBy()))
-                        .mergeWithParent(preferredProperties);
+                        .mergeWithParent(preferredProperties, !isExactPartitioningPreferred(session));
                 addExchange = partial -> partitionedExchange(
                         idAllocator.getNextId(),
                         selectExchangeScopeForPartitionedRemoteExchange(partial, false),
@@ -416,8 +432,8 @@ public class AddExchanges
             }
 
             PlanWithProperties child = planChild(node, preferredChildProperties);
-            if (!child.getProperties().isStreamPartitionedOn(node.getPartitionBy())
-                    && !child.getProperties().isNodePartitionedOn(node.getPartitionBy())) {
+            if (!isStreamPartitionedOn(child.getProperties(), node.getPartitionBy())
+                    && !isNodePartitionedOn(child.getProperties(), node.getPartitionBy())) {
                 // add exchange + push function to child
                 child = withDerivedProperties(
                         new TopNRowNumberNode(
@@ -543,7 +559,9 @@ public class AddExchanges
         @Override
         public PlanWithProperties visitFilter(FilterNode node, PreferredProperties preferredProperties)
         {
-            if (node.getSource() instanceof TableScanNode) {
+            if (node.getSource() instanceof TableScanNode && metadata.isLegacyGetLayoutSupported(session, ((TableScanNode) node.getSource()).getTable())) {
+                // If isLegacyGetLayoutSupported, then we can continue with legacy predicate pushdown logic.
+                // Otherwise, we leave the filter as is in the plan as it will be pushed into the TableScan by filter pushdown logic in the connector.
                 return planTableScan((TableScanNode) node.getSource(), node.getPredicate());
             }
 
@@ -561,27 +579,31 @@ public class AddExchanges
         {
             PlanWithProperties source = node.getSource().accept(this, preferredProperties);
 
-            Optional<PartitioningScheme> partitioningScheme = node.getPartitioningScheme();
-            if (!partitioningScheme.isPresent()) {
+            Optional<PartitioningScheme> shufflePartitioningScheme = node.getTablePartitioningScheme();
+            if (!shufflePartitioningScheme.isPresent()) {
+                shufflePartitioningScheme = node.getPreferredShufflePartitioningScheme();
+            }
+
+            if (!shufflePartitioningScheme.isPresent()) {
                 if (scaleWriters) {
-                    partitioningScheme = Optional.of(new PartitioningScheme(Partitioning.create(SCALED_WRITER_DISTRIBUTION, ImmutableList.of()), source.getNode().getOutputVariables()));
+                    shufflePartitioningScheme = Optional.of(new PartitioningScheme(Partitioning.create(SCALED_WRITER_DISTRIBUTION, ImmutableList.of()), source.getNode().getOutputVariables()));
                 }
                 else if (redistributeWrites) {
-                    partitioningScheme = Optional.of(new PartitioningScheme(Partitioning.create(FIXED_ARBITRARY_DISTRIBUTION, ImmutableList.of()), source.getNode().getOutputVariables()));
+                    shufflePartitioningScheme = Optional.of(new PartitioningScheme(Partitioning.create(FIXED_ARBITRARY_DISTRIBUTION, ImmutableList.of()), source.getNode().getOutputVariables()));
                 }
             }
 
-            if (partitioningScheme.isPresent() &&
+            if (shufflePartitioningScheme.isPresent() &&
                     // TODO: Deprecate compatible table partitioning
-                    !source.getProperties().isCompatibleTablePartitioningWith(partitioningScheme.get().getPartitioning(), false, metadata, session) &&
-                    !(source.getProperties().isRefinedPartitioningOver(partitioningScheme.get().getPartitioning(), false, metadata, session) &&
+                    !source.getProperties().isCompatibleTablePartitioningWith(shufflePartitioningScheme.get().getPartitioning(), false, metadata, session) &&
+                    !(source.getProperties().isRefinedPartitioningOver(shufflePartitioningScheme.get().getPartitioning(), false, metadata, session) &&
                             canPushdownPartialMerge(source.getNode(), partialMergePushdownStrategy))) {
                 source = withDerivedProperties(
                         partitionedExchange(
                                 idAllocator.getNextId(),
                                 REMOTE_STREAMING,
                                 source.getNode(),
-                                partitioningScheme.get()),
+                                shufflePartitioningScheme.get()),
                         source.getProperties());
             }
             return rebaseAndDeriveProperties(node, source);
@@ -589,7 +611,7 @@ public class AddExchanges
 
         private PlanWithProperties planTableScan(TableScanNode node, RowExpression predicate)
         {
-            PlanNode plan = pushPredicateIntoTableScan(node, predicate, true, session, types, idAllocator, metadata, parser, domainTranslator);
+            PlanNode plan = pushPredicateIntoTableScan(node, predicate, true, session, idAllocator, metadata);
             // TODO: Support selecting layout with best local property once connector can participate in query optimization.
             return new PlanWithProperties(plan, derivePropertiesRecursively(plan));
         }
@@ -706,7 +728,7 @@ public class AddExchanges
 
                 // use partitioned join if probe side is naturally partitioned on join symbols (e.g: because of aggregation)
                 if (!node.getCriteria().isEmpty()
-                        && left.getProperties().isNodePartitionedOn(leftVariables) && !left.getProperties().isSingleNode()) {
+                        && isNodePartitionedOn(left.getProperties(), leftVariables) && !left.getProperties().isSingleNode()) {
                     return planPartitionedJoin(node, leftVariables, rightVariables, left);
                 }
 
@@ -729,7 +751,7 @@ public class AddExchanges
 
             PlanWithProperties right;
 
-            if (left.getProperties().isNodePartitionedOn(leftVariables) && !left.getProperties().isSingleNode()) {
+            if (isNodePartitionedOn(left.getProperties(), leftVariables) && !left.getProperties().isSingleNode()) {
                 Partitioning rightPartitioning = left.getProperties().translateVariable(createTranslator(leftToRight)).getNodePartitioning().get();
                 right = node.getRight().accept(this, PreferredProperties.partitioned(rightPartitioning));
                 if (!right.getProperties().isCompatibleTablePartitioningWith(left.getProperties(), rightToLeft::get, metadata, session) &&
@@ -748,7 +770,7 @@ public class AddExchanges
             else {
                 right = node.getRight().accept(this, PreferredProperties.partitioned(ImmutableSet.copyOf(rightVariables)));
 
-                if (right.getProperties().isNodePartitionedOn(rightVariables) && !right.getProperties().isSingleNode()) {
+                if (isNodePartitionedOn(right.getProperties(), rightVariables) && !right.getProperties().isSingleNode()) {
                     Partitioning leftPartitioning = right.getProperties().translateVariable(createTranslator(rightToLeft)).getNodePartitioning().get();
                     left = withDerivedProperties(
                             partitionedExchange(
@@ -830,7 +852,8 @@ public class AddExchanges
                     node.getFilter(),
                     node.getLeftHashVariable(),
                     node.getRightHashVariable(),
-                    Optional.of(newDistributionType));
+                    Optional.of(newDistributionType),
+                    node.getDynamicFilters());
 
             return new PlanWithProperties(result, deriveProperties(result, ImmutableList.of(newLeft.getProperties(), newRight.getProperties())));
         }
@@ -894,7 +917,7 @@ public class AddExchanges
 
                 source = node.getSource().accept(this, PreferredProperties.partitioned(ImmutableSet.copyOf(sourceVariables)));
 
-                if (source.getProperties().isNodePartitionedOn(sourceVariables) && !source.getProperties().isSingleNode()) {
+                if (isNodePartitionedOn(source.getProperties(), sourceVariables) && !source.getProperties().isSingleNode()) {
                     Partitioning filteringPartitioning = source.getProperties().translateVariable(createTranslator(sourceToFiltering)).getNodePartitioning().get();
                     filteringSource = node.getFilteringSource().accept(this, PreferredProperties.partitionedWithNullsAndAnyReplicated(filteringPartitioning));
                     // TODO: Deprecate compatible table partitioning
@@ -914,7 +937,7 @@ public class AddExchanges
                 else {
                     filteringSource = node.getFilteringSource().accept(this, PreferredProperties.partitionedWithNullsAndAnyReplicated(ImmutableSet.copyOf(filteringSourceVariables)));
 
-                    if (filteringSource.getProperties().isNodePartitionedOn(filteringSourceVariables, true) && !filteringSource.getProperties().isSingleNode()) {
+                    if (filteringSource.getProperties().isNodePartitionedOn(filteringSourceVariables, true, isExactPartitioningPreferred(session)) && !filteringSource.getProperties().isSingleNode()) {
                         Partitioning sourcePartitioning = filteringSource.getProperties().translateVariable(createTranslator(filteringToSource)).getNodePartitioning().get();
                         source = withDerivedProperties(
                                 partitionedExchange(idAllocator.getNextId(), REMOTE_STREAMING, source.getNode(), new PartitioningScheme(sourcePartitioning, source.getNode().getOutputVariables())),
@@ -988,7 +1011,7 @@ public class AddExchanges
             List<LocalProperty<VariableReferenceExpression>> desiredLocalProperties = preferredProperties.getLocalProperties().isEmpty() ? grouped(joinColumns) : ImmutableList.of();
 
             PlanWithProperties probeSource = node.getProbeSource().accept(this, PreferredProperties.partitionedWithLocal(ImmutableSet.copyOf(joinColumns), desiredLocalProperties)
-                    .mergeWithParent(preferredProperties));
+                    .mergeWithParent(preferredProperties, true));
             ActualProperties probeProperties = probeSource.getProperties();
 
             PlanWithProperties indexSource = node.getIndexSource().accept(this, PreferredProperties.any());
@@ -1024,14 +1047,14 @@ public class AddExchanges
 
             // Disable repartitioning if it would disrupt a parent's partitioning preference when streaming is enabled
             boolean parentAlreadyPartitionedOnChild = parentPartitioningPreferences
-                    .map(partitioning -> probeProperties.isStreamPartitionedOn(partitioning.getPartitioningColumns()))
+                    .map(partitioning -> probeProperties.isStreamPartitionedOn(partitioning.getPartitioningColumns(), false))
                     .orElse(false);
             if (preferStreamingOperators && parentAlreadyPartitionedOnChild) {
                 return false;
             }
 
             // Otherwise, repartition if we need to align with the join columns
-            if (!probeProperties.isStreamPartitionedOn(joinColumns)) {
+            if (!probeProperties.isStreamPartitionedOn(joinColumns, false)) {
                 return true;
             }
 
@@ -1073,7 +1096,7 @@ public class AddExchanges
                 // Don't select a single node partitioning so that we maintain query parallelism
                 // Theoretically, if all children are single partitioned on the same node we could choose a single
                 // partitioning, but as this only applies to a union of two values nodes, it isn't worth the added complexity
-                if (child.getProperties().isNodePartitionedOn(childPartitioning.getPartitioningColumns(), nullsAndAnyReplicated) && !child.getProperties().isSingleNode()) {
+                if (child.getProperties().isNodePartitionedOn(childPartitioning.getPartitioningColumns(), nullsAndAnyReplicated, isExactPartitioningPreferred(session)) && !child.getProperties().isSingleNode()) {
                     Function<VariableReferenceExpression, Optional<VariableReferenceExpression>> childToParent = createTranslator(createMapping(
                             node.sourceOutputLayout(sourceIndex),
                             node.getOutputVariables()));
@@ -1179,10 +1202,36 @@ public class AddExchanges
                 // children partitioning and don't GATHER partitioned inputs
                 // TODO: add FIXED_ARBITRARY_DISTRIBUTION support on non empty singleNodeChildren
                 if (!parentPartitioningPreference.isPresent() || parentPartitioningPreference.get().isDistributed()) {
-                    return arbitraryDistributeUnion(node, distributedChildren, distributedOutputLayouts);
+                    // TODO: can we insert LOCAL exchange for one child SOURCE distributed and another HASH distributed?
+                    if (getNumberOfTableScans(distributedChildren) == 0 && isSameOrSystemCompatiblePartitions(extractRemoteExchangePartitioningHandles(distributedChildren))) {
+                        // No source distributed child, we can use insert LOCAL exchange
+                        // TODO: if all children have the same partitioning, pass this partitioning to the parent
+                        // instead of "arbitraryPartition".
+                        return new PlanWithProperties(node.replaceChildren(distributedChildren));
+                    }
+                    else if (preferDistributedUnion) {
+                        // Presto currently can not execute stage that has multiple table scans, so in that case
+                        // we have to insert REMOTE exchange with FIXED_ARBITRARY_DISTRIBUTION instead of local exchange
+                        return new PlanWithProperties(
+                                new ExchangeNode(
+                                        idAllocator.getNextId(),
+                                        REPARTITION,
+                                        REMOTE_STREAMING,
+                                        new PartitioningScheme(Partitioning.create(FIXED_ARBITRARY_DISTRIBUTION, ImmutableList.of()), node.getOutputVariables()),
+                                        distributedChildren,
+                                        distributedOutputLayouts,
+                                        false,
+                                        Optional.empty()));
+                    }
                 }
 
-                // add a gathering exchange above partitioned inputs
+                // This can happen in two cases:
+                // 1. Parent node doesn't prefer distributed partitioning (e.g. TableFinish, Sort)
+                // 2. Parent node prefers distributed partitioning but prefer_distributed_union is disabled
+                // In the second case the gather exchange will unnecessarily decrease query parallelism.
+                // If presto supported multiple table scans this exchange could be avoided completely.
+                // We should consider supporting multiple table scans, at least for Presto on Spark where
+                // it could be easier to implement and round robin exchanges are much more expensive.
                 result = new ExchangeNode(
                         idAllocator.getNextId(),
                         GATHER,
@@ -1239,34 +1288,6 @@ public class AddExchanges
                             .build());
         }
 
-        private PlanWithProperties arbitraryDistributeUnion(
-                UnionNode node,
-                List<PlanNode> distributedChildren,
-                List<List<VariableReferenceExpression>> distributedOutputLayouts)
-        {
-            // TODO: can we insert LOCAL exchange for one child SOURCE distributed and another HASH distributed?
-            if (getNumberOfTableScans(distributedChildren) == 0 && isSameOrSystemCompatiblePartitions(extractRemoteExchangePartitioningHandles(distributedChildren))) {
-                // No source distributed child, we can use insert LOCAL exchange
-                // TODO: if all children have the same partitioning, pass this partitioning to the parent
-                // instead of "arbitraryPartition".
-                return new PlanWithProperties(node.replaceChildren(distributedChildren));
-            }
-            else {
-                // Presto currently can not execute stage that has multiple table scans, so in that case
-                // we have to insert REMOTE exchange with FIXED_ARBITRARY_DISTRIBUTION instead of local exchange
-                return new PlanWithProperties(
-                        new ExchangeNode(
-                                idAllocator.getNextId(),
-                                REPARTITION,
-                                REMOTE_STREAMING,
-                                new PartitioningScheme(Partitioning.create(FIXED_ARBITRARY_DISTRIBUTION, ImmutableList.of()), node.getOutputVariables()),
-                                distributedChildren,
-                                distributedOutputLayouts,
-                                false,
-                                Optional.empty()));
-            }
-        }
-
         @Override
         public PlanWithProperties visitApply(ApplyNode node, PreferredProperties preferredProperties)
         {
@@ -1317,7 +1338,7 @@ public class AddExchanges
 
         private ActualProperties deriveProperties(PlanNode result, List<ActualProperties> inputProperties)
         {
-            // TODO: move this logic to PlanSanityChecker once PropertyDerivations.deriveProperties fully supports local exchanges
+            // TODO: move this logic to PlanChecker once PropertyDerivations.deriveProperties fully supports local exchanges
             ActualProperties outputProperties = PropertyDerivations.deriveProperties(result, inputProperties, metadata, session, types, parser);
             verify(result instanceof SemiJoinNode || inputProperties.stream().noneMatch(ActualProperties::isNullsAndAnyReplicated) || outputProperties.isNullsAndAnyReplicated(),
                     "SemiJoinNode is the only node that can strip null replication");
@@ -1329,7 +1350,7 @@ public class AddExchanges
             return PropertyDerivations.derivePropertiesRecursively(result, metadata, session, types, parser);
         }
 
-        private Partitioning createPartitioning(List<VariableReferenceExpression> partitioningColumns)
+        private Partitioning createPartitioning(Collection<VariableReferenceExpression> partitioningColumns)
         {
             // TODO: Use SystemTablesMetadata instead of introducing a special case
             if (GlobalSystemConnector.NAME.equals(partitioningProviderCatalog)) {
@@ -1376,6 +1397,25 @@ public class AddExchanges
                 default:
                     throw new IllegalStateException("Unexpected exchange materialization strategy: " + exchangeMaterializationStrategy);
             }
+        }
+
+        private boolean isNodePartitionedOn(ActualProperties properties, Collection<VariableReferenceExpression> columns)
+        {
+            return properties.isNodePartitionedOn(columns, isExactPartitioningPreferred(session));
+        }
+
+        private boolean isStreamPartitionedOn(ActualProperties properties, Collection<VariableReferenceExpression> columns)
+        {
+            return properties.isStreamPartitionedOn(columns, isExactPartitioningPreferred(session));
+        }
+
+        private boolean shouldAggregationMergePartitionPreferences(AggregationPartitioningMergingStrategy aggregationPartitioningMergingStrategy)
+        {
+            if (isExactPartitioningPreferred(session)) {
+                return false;
+            }
+
+            return aggregationPartitioningMergingStrategy.isMergingWithParent();
         }
     }
 
@@ -1464,7 +1504,7 @@ public class AddExchanges
         if (!preferredGlobal.getPartitioningProperties().isPresent()) {
             return !actual.isSingleNode();
         }
-        return actual.isStreamPartitionedOn(preferredGlobal.getPartitioningProperties().get().getPartitioningColumns());
+        return actual.isStreamPartitionedOn(preferredGlobal.getPartitioningProperties().get().getPartitioningColumns(), false);
     }
 
     // Prefer the match result that satisfied the most requirements

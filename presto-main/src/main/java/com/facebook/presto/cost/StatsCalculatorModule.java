@@ -60,6 +60,8 @@ public class StatsCalculatorModule
         rules.add(new RowNumberStatsRule(normalizer));
         rules.add(new UnnestStatsRule());
         rules.add(new SortStatsRule());
+        rules.add(new SampleStatsRule(normalizer));
+        rules.add(new IntersectStatsRule(normalizer));
 
         return new ComposableStatsCalculator(rules.build());
     }

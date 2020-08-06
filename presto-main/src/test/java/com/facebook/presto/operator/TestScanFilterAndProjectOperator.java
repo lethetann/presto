@@ -15,6 +15,10 @@ package com.facebook.presto.operator;
 
 import com.facebook.presto.SequencePageBuilder;
 import com.facebook.presto.block.BlockAssertions;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.LazyBlock;
+import com.facebook.presto.common.block.LazyBlockLoader;
 import com.facebook.presto.metadata.FunctionManager;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.metadata.MetadataManager;
@@ -23,6 +27,7 @@ import com.facebook.presto.metadata.SqlScalarFunction;
 import com.facebook.presto.operator.index.PageRecordSet;
 import com.facebook.presto.operator.project.CursorProcessor;
 import com.facebook.presto.operator.project.PageProcessor;
+import com.facebook.presto.operator.project.PageProjectionWithOutputs;
 import com.facebook.presto.operator.project.TestPageProcessor.LazyPagePageProjection;
 import com.facebook.presto.operator.project.TestPageProcessor.SelectAllFilter;
 import com.facebook.presto.operator.scalar.AbstractTestFunctions;
@@ -30,11 +35,8 @@ import com.facebook.presto.spi.ConnectorId;
 import com.facebook.presto.spi.ConnectorPageSource;
 import com.facebook.presto.spi.ConnectorTableHandle;
 import com.facebook.presto.spi.FixedPageSource;
-import com.facebook.presto.spi.Page;
 import com.facebook.presto.spi.RecordPageSource;
 import com.facebook.presto.spi.TableHandle;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.LazyBlock;
 import com.facebook.presto.spi.connector.ConnectorTransactionHandle;
 import com.facebook.presto.spi.plan.PlanNodeId;
 import com.facebook.presto.spi.relation.RowExpression;
@@ -44,9 +46,11 @@ import com.facebook.presto.testing.MaterializedResult;
 import com.facebook.presto.testing.TestingSplit;
 import com.facebook.presto.testing.TestingTransactionHandle;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Iterators;
 import io.airlift.units.DataSize;
 import org.testng.annotations.Test;
 
+import java.util.Iterator;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ExecutorService;
@@ -57,22 +61,24 @@ import static com.facebook.airlift.concurrent.Threads.daemonThreadsNamed;
 import static com.facebook.presto.RowPagesBuilder.rowPagesBuilder;
 import static com.facebook.presto.SessionTestUtils.TEST_SESSION;
 import static com.facebook.presto.block.BlockAssertions.toValues;
+import static com.facebook.presto.common.function.OperatorType.EQUAL;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.facebook.presto.metadata.MetadataManager.createTestMetadataManager;
 import static com.facebook.presto.operator.OperatorAssertion.toMaterializedResult;
 import static com.facebook.presto.operator.PageAssertions.assertPageEquals;
 import static com.facebook.presto.operator.project.PageProcessor.MAX_BATCH_SIZE;
-import static com.facebook.presto.spi.function.OperatorType.EQUAL;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
 import static com.facebook.presto.sql.analyzer.TypeSignatureProvider.fromTypes;
 import static com.facebook.presto.sql.relational.Expressions.call;
 import static com.facebook.presto.sql.relational.Expressions.constant;
 import static com.facebook.presto.sql.relational.Expressions.field;
 import static com.facebook.presto.testing.TestingTaskContext.createTaskContext;
 import static com.facebook.presto.testing.assertions.Assert.assertEquals;
+import static com.google.common.base.Preconditions.checkState;
 import static io.airlift.units.DataSize.Unit.BYTE;
 import static io.airlift.units.DataSize.Unit.KILOBYTE;
+import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.Executors.newCachedThreadPool;
 import static java.util.concurrent.Executors.newScheduledThreadPool;
 import static java.util.concurrent.TimeUnit.SECONDS;
@@ -120,6 +126,7 @@ public class TestScanFilterAndProjectOperator
                 TESTING_TABLE_HANDLE,
                 ImmutableList.of(),
                 ImmutableList.of(VARCHAR),
+                Optional.empty(),
                 new DataSize(0, BYTE),
                 0);
 
@@ -164,6 +171,7 @@ public class TestScanFilterAndProjectOperator
                 TESTING_TABLE_HANDLE,
                 ImmutableList.of(),
                 ImmutableList.of(BIGINT),
+                Optional.empty(),
                 new DataSize(64, KILOBYTE),
                 2);
 
@@ -196,7 +204,7 @@ public class TestScanFilterAndProjectOperator
 
         List<RowExpression> projections = ImmutableList.of(field(0, VARCHAR));
         Supplier<CursorProcessor> cursorProcessor = expressionCompiler.compileCursorProcessor(driverContext.getSession().getSqlFunctionProperties(), Optional.empty(), projections, "key");
-        PageProcessor pageProcessor = new PageProcessor(Optional.of(new SelectAllFilter()), ImmutableList.of(new LazyPagePageProjection()));
+        PageProcessor pageProcessor = new PageProcessor(Optional.of(new SelectAllFilter()), ImmutableList.of(new PageProjectionWithOutputs(new LazyPagePageProjection(), new int[] {0})));
 
         ScanFilterAndProjectOperator.ScanFilterAndProjectOperatorFactory factory = new ScanFilterAndProjectOperator.ScanFilterAndProjectOperatorFactory(
                 0,
@@ -208,6 +216,7 @@ public class TestScanFilterAndProjectOperator
                 TESTING_TABLE_HANDLE,
                 ImmutableList.of(),
                 ImmutableList.of(BIGINT),
+                Optional.empty(),
                 new DataSize(0, BYTE),
                 0);
 
@@ -220,6 +229,55 @@ public class TestScanFilterAndProjectOperator
 
         assertEquals(actual.getRowCount(), expected.getRowCount());
         assertEquals(actual, expected);
+    }
+
+    @Test
+    public void testPageSourceLazyBlock()
+    {
+        // Tests that a page containing a LazyBlock is loaded and its bytes are counted by the operator.
+        DriverContext driverContext = newDriverContext();
+        List<RowExpression> projections = ImmutableList.of(field(0, BIGINT));
+        Supplier<CursorProcessor> cursorProcessor = expressionCompiler.compileCursorProcessor(driverContext.getSession().getSqlFunctionProperties(), Optional.empty(), projections, "key");
+        Supplier<PageProcessor> pageProcessor = expressionCompiler.compilePageProcessor(driverContext.getSession().getSqlFunctionProperties(), Optional.empty(), projections);
+
+        // This Block will be wrapped in a LazyBlock inside the operator on call to getNextPage().
+        Block inputBlock = BlockAssertions.createLongSequenceBlock(0, 10);
+
+        CountingLazyPageSource pageSource = new CountingLazyPageSource(ImmutableList.of(new Page(inputBlock)));
+
+        ScanFilterAndProjectOperator.ScanFilterAndProjectOperatorFactory factory = new ScanFilterAndProjectOperator.ScanFilterAndProjectOperatorFactory(
+                0,
+                new PlanNodeId("test"),
+                new PlanNodeId("0"),
+                (session, split, table, columns) -> pageSource,
+                cursorProcessor,
+                pageProcessor,
+                TESTING_TABLE_HANDLE,
+                ImmutableList.of(),
+                ImmutableList.of(BIGINT),
+                Optional.empty(),
+                new DataSize(0, BYTE),
+                0);
+
+        SourceOperator operator = factory.createOperator(driverContext);
+        operator.addSplit(new Split(new ConnectorId("test"), TestingTransactionHandle.create(), TestingSplit.createLocalSplit()));
+        operator.noMoreSplits();
+
+        MaterializedResult expected = toMaterializedResult(driverContext.getSession(), ImmutableList.of(BIGINT), ImmutableList.of(new Page(inputBlock)));
+        Page expectedPage = expected.toPage();
+        MaterializedResult actual = toMaterializedResult(driverContext.getSession(), ImmutableList.of(BIGINT), toPages(operator));
+        Page actualPage = actual.toPage();
+
+        // Assert expected page and actual page are equal.
+        assertPageEquals(actual.getTypes(), actualPage, expectedPage);
+
+        // PageSource counting isn't flawed, assert on the test implementation
+        assertEquals(pageSource.getCompletedBytes(), expectedPage.getSizeInBytes());
+        assertEquals(pageSource.getCompletedPositions(), expectedPage.getPositionCount());
+
+        // Assert operator stats match the expected values
+        assertEquals(operator.getOperatorContext().getOperatorStats().getRawInputDataSize().toBytes(), expectedPage.getSizeInBytes());
+        assertEquals(operator.getOperatorContext().getOperatorStats().getInputPositions(), expected.getRowCount());
     }
 
     @Test
@@ -242,6 +300,7 @@ public class TestScanFilterAndProjectOperator
                 TESTING_TABLE_HANDLE,
                 ImmutableList.of(),
                 ImmutableList.of(VARCHAR),
+                Optional.empty(),
                 new DataSize(0, BYTE),
                 0);
 
@@ -283,7 +342,7 @@ public class TestScanFilterAndProjectOperator
             projections.add(call("generic_long_page_col", functionManager.lookupFunction("generic_long_page_col" + i, fromTypes(BIGINT)), BIGINT, field(0, BIGINT)));
         }
         Supplier<CursorProcessor> cursorProcessor = expressionCompiler.compileCursorProcessor(driverContext.getSession().getSqlFunctionProperties(), Optional.empty(), projections.build(), "key");
-        Supplier<PageProcessor> pageProcessor = expressionCompiler.compilePageProcessor(driverContext.getSession().getSqlFunctionProperties(), Optional.empty(), projections.build(), MAX_BATCH_SIZE);
+        Supplier<PageProcessor> pageProcessor = expressionCompiler.compilePageProcessor(driverContext.getSession().getSqlFunctionProperties(), Optional.empty(), projections.build(), false, MAX_BATCH_SIZE);
 
         ScanFilterAndProjectOperator.ScanFilterAndProjectOperatorFactory factory = new ScanFilterAndProjectOperator.ScanFilterAndProjectOperatorFactory(
                 0,
@@ -295,6 +354,7 @@ public class TestScanFilterAndProjectOperator
                 TESTING_TABLE_HANDLE,
                 ImmutableList.of(),
                 ImmutableList.of(BIGINT),
+                Optional.empty(),
                 new DataSize(0, BYTE),
                 0);
 
@@ -362,6 +422,7 @@ public class TestScanFilterAndProjectOperator
                 TESTING_TABLE_HANDLE,
                 ImmutableList.of(),
                 ImmutableList.of(BIGINT),
+                Optional.empty(),
                 new DataSize(0, BYTE),
                 0);
 
@@ -465,6 +526,99 @@ public class TestScanFilterAndProjectOperator
             Page page = this.page;
             this.page = null;
             return page;
+        }
+    }
+
+    private static class CountingLazyPageSource
+            implements ConnectorPageSource
+    {
+        private Iterator<Page> pages;
+        private long completedBytes;
+        private long completedPositions;
+
+        public CountingLazyPageSource(List<Page> pages)
+        {
+            this.pages = requireNonNull(pages, "pages is null").iterator();
+        }
+
+        @Override
+        public void close()
+        {
+            pages = Iterators.forArray();
+        }
+
+        @Override
+        public long getReadTimeNanos()
+        {
+            return 0;
+        }
+
+        @Override
+        public long getSystemMemoryUsage()
+        {
+            return 0;
+        }
+
+        @Override
+        public boolean isFinished()
+        {
+            return !pages.hasNext();
+        }
+
+        @Override
+        public Page getNextPage()
+        {
+            if (isFinished()) {
+                return null;
+            }
+
+            Page page = pages.next();
+            int channelCount = page.getChannelCount();
+            Block[] blocks = new Block[channelCount];
+
+            for (int i = 0; i < channelCount; ++i) {
+                Block block = page.getBlock(i);
+                // Wrap current Block in a LazyBlock.
+                blocks[i] = new LazyBlock(block.getPositionCount(), new CountingLazyBlockLoader(block));
+            }
+            completedPositions += page.getPositionCount();
+
+            return new Page(page.getPositionCount(), blocks);
+        }
+
+        @Override
+        public long getCompletedBytes()
+        {
+            return completedBytes;
+        }
+
+        @Override
+        public long getCompletedPositions()
+        {
+            return completedPositions;
+        }
+
+        private final class CountingLazyBlockLoader
+                implements LazyBlockLoader<LazyBlock>
+        {
+            private Block loaderBlock;
+
+            public CountingLazyBlockLoader(Block block)
+            {
+                loaderBlock = block;
+            }
+
+            @Override
+            public final void load(LazyBlock lazyBlock)
+            {
+                checkState(loaderBlock != null, "loaderBlock already loaded");
+
+                Block loadedBlock = loaderBlock.getLoadedBlock();
+                // Increment completed/read bytes for the page source.
+                completedBytes += loadedBlock.getSizeInBytes();
+                loaderBlock = null;
+                lazyBlock.setBlock(loadedBlock);
+            }
         }
     }
 }

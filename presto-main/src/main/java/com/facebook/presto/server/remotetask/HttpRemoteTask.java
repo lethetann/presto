@@ -124,11 +124,11 @@ public final class HttpRemoteTask
 
     private final TaskId taskId;
     private final URI taskLocation;
+    private final URI remoteTaskLocation;
 
     private final Session session;
     private final String nodeId;
     private final PlanFragment planFragment;
-    private final OptionalInt totalPartitions;
 
     private final Set<PlanNodeId> tableScanPlanNodeIds;
     private final Set<PlanNodeId> remoteSourcePlanNodeIds;
@@ -171,6 +171,7 @@ public final class HttpRemoteTask
 
     private final Codec<TaskInfo> taskInfoCodec;
     private final Codec<TaskUpdateRequest> taskUpdateRequestCodec;
+    private final Codec<PlanFragment> planFragmentCodec;
 
     private final RequestErrorTracker updateErrorTracker;
 
@@ -191,9 +192,9 @@ public final class HttpRemoteTask
             TaskId taskId,
             String nodeId,
             URI location,
+            URI remoteLocation,
             PlanFragment planFragment,
             Multimap<PlanNodeId, Split> initialSplits,
-            OptionalInt totalPartitions,
             OutputBuffers outputBuffers,
             HttpClient httpClient,
             Executor executor,
@@ -207,6 +208,7 @@ public final class HttpRemoteTask
             Codec<TaskStatus> taskStatusCodec,
             Codec<TaskInfo> taskInfoCodec,
             Codec<TaskUpdateRequest> taskUpdateRequestCodec,
+            Codec<PlanFragment> planFragmentCodec,
             PartitionedSplitCountTracker partitionedSplitCountTracker,
             RemoteTaskStats stats,
             boolean isBinaryTransportEnabled,
@@ -217,14 +219,15 @@ public final class HttpRemoteTask
         requireNonNull(taskId, "taskId is null");
         requireNonNull(nodeId, "nodeId is null");
         requireNonNull(location, "location is null");
+        requireNonNull(remoteLocation, "remoteLocation is null");
         requireNonNull(planFragment, "planFragment is null");
-        requireNonNull(totalPartitions, "totalPartitions is null");
         requireNonNull(outputBuffers, "outputBuffers is null");
         requireNonNull(httpClient, "httpClient is null");
         requireNonNull(executor, "executor is null");
         requireNonNull(taskStatusCodec, "taskStatusCodec is null");
         requireNonNull(taskInfoCodec, "taskInfoCodec is null");
         requireNonNull(taskUpdateRequestCodec, "taskUpdateRequestCodec is null");
+        requireNonNull(planFragmentCodec, "planFragmentCodec is null");
         requireNonNull(partitionedSplitCountTracker, "partitionedSplitCountTracker is null");
         requireNonNull(maxErrorDuration, "maxErrorDuration is null");
         requireNonNull(stats, "stats is null");
@@ -234,10 +237,10 @@ public final class HttpRemoteTask
         try (SetThreadName ignored = new SetThreadName("HttpRemoteTask-%s", taskId)) {
             this.taskId = taskId;
             this.taskLocation = location;
+            this.remoteTaskLocation = remoteLocation;
             this.session = session;
             this.nodeId = nodeId;
             this.planFragment = planFragment;
-            this.totalPartitions = totalPartitions;
             this.outputBuffers.set(outputBuffers);
             this.httpClient = httpClient;
             this.executor = executor;
@@ -245,6 +248,7 @@ public final class HttpRemoteTask
             this.summarizeTaskInfo = summarizeTaskInfo;
             this.taskInfoCodec = taskInfoCodec;
             this.taskUpdateRequestCodec = taskUpdateRequestCodec;
+            this.planFragmentCodec = planFragmentCodec;
             this.updateErrorTracker = new RequestErrorTracker(taskId, location, maxErrorDuration, errorScheduledExecutor, "updating task");
             this.partitionedSplitCountTracker = requireNonNull(partitionedSplitCountTracker, "partitionedSplitCountTracker is null");
             this.maxErrorDuration = maxErrorDuration;
@@ -272,10 +276,11 @@ public final class HttpRemoteTask
                     .map(outputId -> new BufferInfo(outputId, false, 0, 0, PageBufferInfo.empty()))
                     .collect(toImmutableList());
 
-            TaskInfo initialTask = createInitialTask(taskId, location, nodeId, bufferStates, new TaskStats(DateTime.now(), null));
+            TaskInfo initialTask = createInitialTask(taskId, location, bufferStates, new TaskStats(DateTime.now(), null));
 
             this.taskStatusFetcher = new ContinuousTaskStatusFetcher(
                     this::failTask,
+                    taskId,
                     initialTask.getTaskStatus(),
                     taskStatusRefreshMaxWait,
                     taskStatusCodec,
@@ -339,6 +344,12 @@ public final class HttpRemoteTask
     public TaskStatus getTaskStatus()
     {
         return taskStatusFetcher.getTaskStatus();
+    }
+
+    @Override
+    public URI getRemoteTaskLocation()
+    {
+        return remoteTaskLocation;
     }
 
     @Override
@@ -624,7 +635,7 @@ public final class HttpRemoteTask
 
         List<TaskSource> sources = getSources();
 
-        Optional<PlanFragment> fragment = sendPlan.get() ? Optional.of(planFragment) : Optional.empty();
+        Optional<byte[]> fragment = sendPlan.get() ? Optional.of(planFragment.toBytes(planFragmentCodec)) : Optional.empty();
         Optional<TableWriteInfo> writeInfo = sendPlan.get() ? Optional.of(tableWriteInfo) : Optional.empty();
         TaskUpdateRequest updateRequest = new TaskUpdateRequest(
                 session.toSessionRepresentation(),
@@ -632,12 +643,11 @@ public final class HttpRemoteTask
                 fragment,
                 sources,
                 outputBuffers.get(),
-                totalPartitions,
                 writeInfo);
         byte[] taskUpdateRequestJson = taskUpdateRequestCodec.toBytes(updateRequest);
 
         if (taskUpdateRequestJson.length > maxTaskUpdateSizeInBytes) {
-            throw new PrestoException(EXCEEDED_TASK_UPDATE_SIZE_LIMIT, format("TaskUpdate size of %d Bytes has exceeded the limit of %d Bytes", taskUpdateRequestJson.length, maxTaskUpdateSizeInBytes));
+            failTask(new PrestoException(EXCEEDED_TASK_UPDATE_SIZE_LIMIT, format("TaskUpdate size of %d Bytes has exceeded the limit of %d Bytes", taskUpdateRequestJson.length, maxTaskUpdateSizeInBytes)));
         }
 
         if (fragment.isPresent()) {
@@ -730,7 +740,8 @@ public final class HttpRemoteTask
 
         // cancel pending request
         if (currentRequest != null) {
-            currentRequest.cancel(true);
+            // do not terminate if the request is already running to avoid closing pooled connections
+            currentRequest.cancel(false);
             currentRequest = null;
             currentRequestStartNanos = 0;
         }
@@ -762,10 +773,6 @@ public final class HttpRemoteTask
         checkState(status.getState().isDone(), "cannot abort task with an incomplete status");
 
         try (SetThreadName ignored = new SetThreadName("HttpRemoteTask-%s", taskId)) {
-            // With recoverable grouped execution, failed task does not necessarily fail the whole query.
-            // Not updating task info makes query unable to finish in tests because failed task is stuck in RUNNING state.
-            // TODO: Investigate why this only happens in TestHiveRecoverableGroupedExecution when worker is closed, but not in production test via cli.
-            taskInfoFetcher.updateTaskInfo(getTaskInfo().withTaskStatus(status));
             taskStatusFetcher.updateTaskStatus(status);
 
             // send abort to task
@@ -871,7 +878,15 @@ public final class HttpRemoteTask
             log.debug(cause, "Remote task %s failed with %s", taskStatus.getSelf(), cause);
         }
 
-        abort(failWith(getTaskStatus(), FAILED, ImmutableList.of(toFailure(cause))));
+        TaskStatus failedTaskStatus = failWith(getTaskStatus(), FAILED, ImmutableList.of(toFailure(cause)));
+        // Transition task to failed state without waiting for the final task info returned by the abort request.
+        // The abort request is very likely not to succeed, leaving the task and the stage in the limbo state for
+        // the entire duration of abort retries. If the task is failed, it is not that important to actually
+        // record the final statistics and the final information about a failed task.
+        taskInfoFetcher.updateTaskInfo(getTaskInfo().withTaskStatus(failedTaskStatus));
+
+        // Initiate abort request
+        abort(failedTaskStatus);
     }
 
     private HttpUriBuilder getHttpUriBuilder(TaskStatus taskStatus)

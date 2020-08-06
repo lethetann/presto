@@ -25,7 +25,7 @@ public class StorageStripeMetadataSource
         implements StripeMetadataSource
 {
     @Override
-    public Slice getStripeFooterSlice(OrcDataSource orcDataSource, StripeId stripeId, long footerOffset, int footerLength)
+    public Slice getStripeFooterSlice(OrcDataSource orcDataSource, StripeId stripeId, long footerOffset, int footerLength, boolean cacheable)
             throws IOException
     {
         byte[] tailBuffer = new byte[footerLength];
@@ -34,7 +34,7 @@ public class StorageStripeMetadataSource
     }
 
     @Override
-    public Map<StreamId, OrcDataSourceInput> getInputs(OrcDataSource orcDataSource, StripeId stripeId, Map<StreamId, DiskRange> diskRanges)
+    public Map<StreamId, OrcDataSourceInput> getInputs(OrcDataSource orcDataSource, StripeId stripeId, Map<StreamId, DiskRange> diskRanges, boolean cacheable)
             throws IOException
     {
         //

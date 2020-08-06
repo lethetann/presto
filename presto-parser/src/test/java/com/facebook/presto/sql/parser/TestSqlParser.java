@@ -16,6 +16,8 @@ package com.facebook.presto.sql.parser;
 import com.facebook.presto.sql.tree.AddColumn;
 import com.facebook.presto.sql.tree.AliasedRelation;
 import com.facebook.presto.sql.tree.AllColumns;
+import com.facebook.presto.sql.tree.AlterFunction;
+import com.facebook.presto.sql.tree.AlterRoutineCharacteristics;
 import com.facebook.presto.sql.tree.Analyze;
 import com.facebook.presto.sql.tree.ArithmeticBinaryExpression;
 import com.facebook.presto.sql.tree.ArrayConstructor;
@@ -100,6 +102,7 @@ import com.facebook.presto.sql.tree.RenameColumn;
 import com.facebook.presto.sql.tree.RenameSchema;
 import com.facebook.presto.sql.tree.RenameTable;
 import com.facebook.presto.sql.tree.ResetSession;
+import com.facebook.presto.sql.tree.Return;
 import com.facebook.presto.sql.tree.Revoke;
 import com.facebook.presto.sql.tree.RevokeRoles;
 import com.facebook.presto.sql.tree.Rollback;
@@ -112,6 +115,8 @@ import com.facebook.presto.sql.tree.SetRole;
 import com.facebook.presto.sql.tree.SetSession;
 import com.facebook.presto.sql.tree.ShowCatalogs;
 import com.facebook.presto.sql.tree.ShowColumns;
+import com.facebook.presto.sql.tree.ShowCreateFunction;
+import com.facebook.presto.sql.tree.ShowFunctions;
 import com.facebook.presto.sql.tree.ShowGrants;
 import com.facebook.presto.sql.tree.ShowRoleGrants;
 import com.facebook.presto.sql.tree.ShowRoles;
@@ -719,6 +724,24 @@ public class TestSqlParser
         assertStatement("SHOW COLUMNS FROM a.b", new ShowColumns(QualifiedName.of("a", "b")));
         assertStatement("SHOW COLUMNS FROM \"awesome table\"", new ShowColumns(QualifiedName.of("awesome table")));
         assertStatement("SHOW COLUMNS FROM \"awesome schema\".\"awesome table\"", new ShowColumns(QualifiedName.of("awesome schema", "awesome table")));
+    }
+
+    @Test
+    public void testShowFunctions()
+    {
+        assertStatement("SHOW FUNCTIONS", new ShowFunctions(Optional.empty(), Optional.empty()));
+        assertStatement("SHOW FUNCTIONS LIKE '%'", new ShowFunctions(Optional.of("%"), Optional.empty()));
+        assertStatement("SHOW FUNCTIONS LIKE '%$_%' ESCAPE '$'", new ShowFunctions(Optional.of("%$_%"), Optional.of("$")));
+    }
+
+    @Test
+    public void testShowCreateFunction()
+    {
+        assertStatement("SHOW CREATE FUNCTION x.y.z", new ShowCreateFunction(QualifiedName.of("x", "y", "z"), Optional.empty()));
+        assertStatement("SHOW CREATE FUNCTION x.y.z()", new ShowCreateFunction(QualifiedName.of("x", "y", "z"), Optional.of(ImmutableList.of())));
+        assertStatement(
+                "SHOW CREATE FUNCTION x.y.z(int, double)",
+                new ShowCreateFunction(QualifiedName.of("x", "y", "z"), Optional.of(ImmutableList.of("int", "double"))));
     }
 
     @Test
@@ -1432,12 +1455,15 @@ public class TestSqlParser
     {
         Query query = simpleQuery(selectList(new AllColumns()), table(QualifiedName.of("t")));
 
-        assertStatement("CREATE VIEW a AS SELECT * FROM t", new CreateView(QualifiedName.of("a"), query, false));
-        assertStatement("CREATE OR REPLACE VIEW a AS SELECT * FROM t", new CreateView(QualifiedName.of("a"), query, true));
+        assertStatement("CREATE VIEW a AS SELECT * FROM t", new CreateView(QualifiedName.of("a"), query, false, Optional.empty()));
+        assertStatement("CREATE OR REPLACE VIEW a AS SELECT * FROM t", new CreateView(QualifiedName.of("a"), query, true, Optional.empty()));
 
-        assertStatement("CREATE VIEW bar.foo AS SELECT * FROM t", new CreateView(QualifiedName.of("bar", "foo"), query, false));
-        assertStatement("CREATE VIEW \"awesome view\" AS SELECT * FROM t", new CreateView(QualifiedName.of("awesome view"), query, false));
-        assertStatement("CREATE VIEW \"awesome schema\".\"awesome view\" AS SELECT * FROM t", new CreateView(QualifiedName.of("awesome schema", "awesome view"), query, false));
+        assertStatement("CREATE VIEW a SECURITY DEFINER AS SELECT * FROM t", new CreateView(QualifiedName.of("a"), query, false, Optional.of(CreateView.Security.DEFINER)));
+        assertStatement("CREATE VIEW a SECURITY INVOKER AS SELECT * FROM t", new CreateView(QualifiedName.of("a"), query, false, Optional.of(CreateView.Security.INVOKER)));
+
+        assertStatement("CREATE VIEW bar.foo AS SELECT * FROM t", new CreateView(QualifiedName.of("bar", "foo"), query, false, Optional.empty()));
+        assertStatement("CREATE VIEW \"awesome view\" AS SELECT * FROM t", new CreateView(QualifiedName.of("awesome view"), query, false, Optional.empty()));
+        assertStatement("CREATE VIEW \"awesome schema\".\"awesome view\" AS SELECT * FROM t", new CreateView(QualifiedName.of("awesome schema", "awesome view"), query, false, Optional.empty()));
     }
 
     @Test
@@ -1458,10 +1484,10 @@ public class TestSqlParser
                         "double",
                         Optional.of("tangent trigonometric function"),
                         new RoutineCharacteristics(SQL, DETERMINISTIC, RETURNS_NULL_ON_NULL_INPUT),
-                        new ArithmeticBinaryExpression(
+                        new Return(new ArithmeticBinaryExpression(
                                 DIVIDE,
                                 new FunctionCall(QualifiedName.of("sin"), ImmutableList.of(identifier("x"))),
-                                new FunctionCall(QualifiedName.of("cos"), ImmutableList.of(identifier("x"))))));
+                                new FunctionCall(QualifiedName.of("cos"), ImmutableList.of(identifier("x")))))));
 
         CreateFunction createFunctionRand = new CreateFunction(
                 QualifiedName.of("dev", "testing", "rand"),
@@ -1470,7 +1496,7 @@ public class TestSqlParser
                 "double",
                 Optional.empty(),
                 new RoutineCharacteristics(SQL, NOT_DETERMINISTIC, CALLED_ON_NULL_INPUT),
-                new FunctionCall(QualifiedName.of("rand"), ImmutableList.of()));
+                new Return(new FunctionCall(QualifiedName.of("rand"), ImmutableList.of())));
         assertStatement(
                 "CREATE OR REPLACE FUNCTION dev.testing.rand ()\n" +
                         "RETURNS double\n" +
@@ -1494,6 +1520,29 @@ public class TestSqlParser
         assertInvalidStatement(
                 "CREATE FUNCTION dev.testing.rand () RETURNS double CALLED ON NULL INPUT CALLED ON NULL INPUT RETURN rand()",
                 "Duplicate null-call clause: CALLEDONNULLINPUT");
+    }
+
+    @Test
+    public void testAlterFunction()
+    {
+        QualifiedName functionName = QualifiedName.of("testing", "default", "tan");
+        assertStatement(
+                "ALTER FUNCTION testing.default.tan\n" +
+                        "CALLED ON NULL INPUT",
+                new AlterFunction(functionName, Optional.empty(), new AlterRoutineCharacteristics(Optional.of(CALLED_ON_NULL_INPUT))));
+        assertStatement(
+                "ALTER FUNCTION testing.default.tan(double)\n" +
+                        "RETURNS NULL ON NULL INPUT",
+                new AlterFunction(functionName, Optional.of(ImmutableList.of("double")), new AlterRoutineCharacteristics(Optional.of(RETURNS_NULL_ON_NULL_INPUT))));
+
+        assertInvalidStatement(
+                "ALTER FUNCTION testing.default.tan",
+                "No alter routine characteristics specified");
+        assertInvalidStatement(
+                "ALTER FUNCTION testing.default.tan\n" +
+                        "RETURNS NULL ON NULL INPUT\n" +
+                        "RETURNS NULL ON NULL INPUT",
+                "Duplicate null-call clause: RETURNSNULLONNULLINPUT");
     }
 
     @Test

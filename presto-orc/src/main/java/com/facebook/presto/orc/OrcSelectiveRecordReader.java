@@ -13,10 +13,20 @@
  */
 package com.facebook.presto.orc;
 
-import com.facebook.presto.memory.context.AggregatedMemoryContext;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.Subfield;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockLease;
+import com.facebook.presto.common.block.LazyBlock;
+import com.facebook.presto.common.block.LazyBlockLoader;
+import com.facebook.presto.common.block.RunLengthEncodedBlock;
+import com.facebook.presto.common.type.CharType;
+import com.facebook.presto.common.type.DecimalType;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.orc.TupleDomainFilter.BigintMultiRange;
 import com.facebook.presto.orc.TupleDomainFilter.BigintRange;
-import com.facebook.presto.orc.TupleDomainFilter.BigintValues;
+import com.facebook.presto.orc.TupleDomainFilter.BigintValuesUsingBitmask;
+import com.facebook.presto.orc.TupleDomainFilter.BigintValuesUsingHashTable;
 import com.facebook.presto.orc.metadata.MetadataReader;
 import com.facebook.presto.orc.metadata.OrcType;
 import com.facebook.presto.orc.metadata.PostScript;
@@ -24,21 +34,10 @@ import com.facebook.presto.orc.metadata.StripeInformation;
 import com.facebook.presto.orc.metadata.statistics.ColumnStatistics;
 import com.facebook.presto.orc.metadata.statistics.StripeStatistics;
 import com.facebook.presto.orc.reader.SelectiveStreamReader;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.Subfield;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockLease;
-import com.facebook.presto.spi.block.LazyBlock;
-import com.facebook.presto.spi.block.LazyBlockLoader;
-import com.facebook.presto.spi.block.RunLengthEncodedBlock;
-import com.facebook.presto.spi.type.CharType;
-import com.facebook.presto.spi.type.DecimalType;
-import com.facebook.presto.spi.type.Type;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Maps;
-import com.google.common.io.Closer;
 import com.google.common.primitives.Ints;
 import io.airlift.slice.Slice;
 import io.airlift.units.DataSize;
@@ -61,18 +60,18 @@ import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.IntStream;
 
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.DateType.DATE;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.RealType.REAL;
+import static com.facebook.presto.common.type.SmallintType.SMALLINT;
+import static com.facebook.presto.common.type.TimestampType.TIMESTAMP;
+import static com.facebook.presto.common.type.TinyintType.TINYINT;
+import static com.facebook.presto.common.type.Varchars.isVarcharType;
 import static com.facebook.presto.orc.OrcReader.MAX_BATCH_SIZE;
 import static com.facebook.presto.orc.reader.SelectiveStreamReaders.createStreamReader;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.DateType.DATE;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
-import static com.facebook.presto.spi.type.RealType.REAL;
-import static com.facebook.presto.spi.type.SmallintType.SMALLINT;
-import static com.facebook.presto.spi.type.TimestampType.TIMESTAMP;
-import static com.facebook.presto.spi.type.TinyintType.TINYINT;
-import static com.facebook.presto.spi.type.Varchars.isVarcharType;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Predicates.not;
 import static com.google.common.base.Verify.verify;
@@ -104,8 +103,10 @@ public class OrcSelectiveRecordReader
     // Optimal order of stream readers
     private int[] streamReaderOrder;                                  // elements are indices into hiveColumnIndices array
 
-    private List<FilterFunctionWithStats>[] filterFunctionsOrder;     // aligned with streamReaderOrder order; each filter function is placed
-                                                                      // into a list positioned at the last necessary input
+    // aligned with streamReaderOrder order; each filter function is placed
+    // into a list positioned at the last necessary input
+    private List<FilterFunctionWithStats>[] filterFunctionsOrder;
+
     private Set<Integer>[] filterFunctionInputs;                      // aligned with filterFunctionsOrder
     private boolean reorderFilters;
     private int[] reorderableColumns;                                 // values are hiveColumnIndices
@@ -158,31 +159,38 @@ public class OrcSelectiveRecordReader
             long length,
             List<OrcType> types,
             Optional<OrcDecompressor> decompressor,
+            Optional<EncryptionLibrary> encryptionLibrary,
+            Map<Integer, Integer> dwrfEncryptionGroupMap,
+            Map<Integer, Slice> intermediateKeyMetadata,
             int rowsInRowGroup,
             DateTimeZone hiveStorageTimeZone,
+            boolean legacyMapSubscript,
             PostScript.HiveWriterVersion hiveWriterVersion,
             MetadataReader metadataReader,
             DataSize maxMergeDistance,
             DataSize tinyStripeThreshold,
             DataSize maxBlockSize,
             Map<String, Slice> userMetadata,
-            AggregatedMemoryContext systemMemoryUsage,
+            OrcAggregatedMemoryContext systemMemoryUsage,
             Optional<OrcWriteValidation> writeValidation,
             int initialBatchSize,
-            StripeMetadataSource stripeMetadataSource)
+            StripeMetadataSource stripeMetadataSource,
+            boolean cacheable)
     {
         super(includedColumns,
+                requiredSubfields,
                 createStreamReaders(
                         orcDataSource,
                         types,
                         hiveStorageTimeZone,
+                        legacyMapSubscript,
                         includedColumns,
                         outputColumns,
                         filters,
                         filterFunctions,
                         filterFunctionInputMapping,
                         requiredSubfields,
-                        systemMemoryUsage.newAggregatedMemoryContext()),
+                        systemMemoryUsage.newOrcAggregatedMemoryContext()),
                 predicate,
                 numberOfRows,
                 fileStripes,
@@ -193,6 +201,9 @@ public class OrcSelectiveRecordReader
                 length,
                 types,
                 decompressor,
+                encryptionLibrary,
+                dwrfEncryptionGroupMap,
+                intermediateKeyMetadata,
                 rowsInRowGroup,
                 hiveStorageTimeZone,
                 hiveWriterVersion,
@@ -204,7 +215,8 @@ public class OrcSelectiveRecordReader
                 systemMemoryUsage,
                 writeValidation,
                 initialBatchSize,
-                stripeMetadataSource);
+                stripeMetadataSource,
+                cacheable);
 
         // Hive column indices can't be used to index into arrays because they are negative
         // for partition and hidden columns. Hence, we create synthetic zero-based indices.
@@ -472,7 +484,7 @@ public class OrcSelectiveRecordReader
             return 50;
         }
 
-        if (filter instanceof BigintValues || filter instanceof BigintMultiRange) {
+        if (filter instanceof BigintValuesUsingHashTable || filter instanceof BigintValuesUsingBitmask || filter instanceof BigintMultiRange) {
             return 50;
         }
 
@@ -552,13 +564,14 @@ public class OrcSelectiveRecordReader
             OrcDataSource orcDataSource,
             List<OrcType> types,
             DateTimeZone hiveStorageTimeZone,
+            boolean legacyMapSubscript,
             Map<Integer, Type> includedColumns,
             List<Integer> outputColumns,
             Map<Integer, Map<Subfield, TupleDomainFilter>> filters,
             List<FilterFunction> filterFunctions,
             Map<Integer, Integer> filterFunctionInputMapping,
             Map<Integer, List<Subfield>> requiredSubfields,
-            AggregatedMemoryContext systemMemoryContext)
+            OrcAggregatedMemoryContext systemMemoryContext)
     {
         List<StreamDescriptor> streamDescriptors = createStreamDescriptor("", "", 0, types, orcDataSource).getNestedStreams();
 
@@ -583,6 +596,7 @@ public class OrcSelectiveRecordReader
                         outputRequired ? Optional.of(includedColumns.get(columnId)) : Optional.empty(),
                         Optional.ofNullable(requiredSubfields.get(columnId)).orElse(ImmutableList.of()),
                         hiveStorageTimeZone,
+                        legacyMapSubscript,
                         systemMemoryContext);
             }
         }
@@ -842,14 +856,6 @@ public class OrcSelectiveRecordReader
     public void close()
             throws IOException
     {
-        try (Closer closer = Closer.create()) {
-            for (SelectiveStreamReader streamReader : getStreamReaders()) {
-                if (streamReader != null) {
-                    closer.register(streamReader::close);
-                }
-            }
-        }
-
         super.close();
     }
 

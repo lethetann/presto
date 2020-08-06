@@ -14,7 +14,7 @@
 package com.facebook.presto.operator;
 
 import com.facebook.presto.block.BlockAssertions;
-import com.facebook.presto.spi.block.Block;
+import com.facebook.presto.common.block.Block;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
 import org.openjdk.jmh.annotations.Fork;
@@ -266,8 +266,8 @@ public class BenchmarkReadBlock
         private final int[] ids = new int[POSITIONS_PER_PAGE];
         private final int[] positions = new int[POSITIONS_PER_PAGE];
 
-        private final Block blockNoNulls = BlockAssertions.createRandomLongsBlock(POSITIONS_PER_PAGE, false);
-        private final Block blockWithNulls = BlockAssertions.createRandomLongsBlock(POSITIONS_PER_PAGE, true);
+        private final Block blockNoNulls = BlockAssertions.createRandomLongsBlock(POSITIONS_PER_PAGE, 0.0f);
+        private final Block blockWithNulls = BlockAssertions.createRandomLongsBlock(POSITIONS_PER_PAGE, 0.2f);
         private final Block dictionaryBlockNoNulls = createRandomDictionaryBlock(blockNoNulls, POSITIONS_PER_PAGE);
         private final Block dictionaryBlockWithNulls = createRandomDictionaryBlock(blockWithNulls, POSITIONS_PER_PAGE);
 

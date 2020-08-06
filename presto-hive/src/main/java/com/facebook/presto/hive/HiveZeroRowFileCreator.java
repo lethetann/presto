@@ -14,7 +14,7 @@
 package com.facebook.presto.hive;
 
 import com.facebook.airlift.log.Logger;
-import com.facebook.presto.hive.HdfsEnvironment.HdfsContext;
+import com.facebook.presto.hive.datasink.DataSinkFactory;
 import com.facebook.presto.hive.metastore.StorageFormat;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.PrestoException;
@@ -35,8 +35,10 @@ import java.util.List;
 import java.util.Properties;
 
 import static com.facebook.airlift.concurrent.MoreFutures.getFutureValue;
+import static com.facebook.presto.hive.HiveCompressionCodec.NONE;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_WRITER_CLOSE_ERROR;
 import static com.facebook.presto.hive.HiveWriteUtils.initializeSerializer;
+import static com.facebook.presto.hive.pagefile.PageFileWriterFactory.createEmptyPageFile;
 import static com.facebook.presto.hive.util.ConfigurationUtils.configureCompression;
 import static com.google.common.util.concurrent.Futures.whenAllSucceed;
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
@@ -52,14 +54,17 @@ public class HiveZeroRowFileCreator
     private static final Logger log = Logger.get(HiveZeroRowFileCreator.class);
 
     private final HdfsEnvironment hdfsEnvironment;
+    private final DataSinkFactory dataSinkFactory;
     private final ListeningExecutorService executor;
 
     @Inject
     public HiveZeroRowFileCreator(
             HdfsEnvironment hdfsEnvironment,
+            DataSinkFactory dataSinkFactory,
             @ForZeroRowFileCreator ListeningExecutorService zeroRowFileCreatorExecutor)
     {
         this.hdfsEnvironment = requireNonNull(hdfsEnvironment, "hdfsEnvironment is null");
+        this.dataSinkFactory = requireNonNull(dataSinkFactory, "dataSinkFactory is null");
         this.executor = requireNonNull(zeroRowFileCreatorExecutor, "zeroRowFileCreatorExecutor is null");
     }
 
@@ -98,7 +103,16 @@ public class HiveZeroRowFileCreator
 
         try {
             Path target = new Path(format("file://%s/%s", tmpDirectoryPath, tmpFileName));
-            JobConf conf = configureCompression(hdfsEnvironment.getConfiguration(hdfsContext, target), compressionCodec);
+
+            //https://github.com/prestodb/presto/issues/14401 JSON Format reader does not fetch compression from source system
+            JobConf conf = configureCompression(
+                    hdfsEnvironment.getConfiguration(hdfsContext, target),
+                    outputFormatName.equals(HiveStorageFormat.JSON.getOutputFormat()) ? compressionCodec : NONE);
+
+            if (outputFormatName.equals(HiveStorageFormat.PAGEFILE.getOutputFormat())) {
+                createEmptyPageFile(dataSinkFactory, session, target.getFileSystem(conf), target);
+                return readAllBytes(tmpFilePath);
+            }
 
             // Some serializers such as Avro set a property in the schema.
             initializeSerializer(conf, properties, serDe);

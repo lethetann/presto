@@ -24,6 +24,7 @@ import com.facebook.presto.metadata.SessionPropertyManager;
 import com.facebook.presto.server.testing.TestingPrestoServer;
 import com.facebook.presto.spi.ConnectorId;
 import com.facebook.presto.spi.Plugin;
+import com.facebook.presto.spi.eventlistener.EventListener;
 import com.facebook.presto.split.PageSourceManager;
 import com.facebook.presto.split.SplitManager;
 import com.facebook.presto.sql.parser.SqlParserOptions;
@@ -39,6 +40,7 @@ import org.intellij.lang.annotations.Language;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
@@ -168,6 +170,12 @@ public final class StandaloneQueryRunner
     }
 
     @Override
+    public Optional<EventListener> getEventListener()
+    {
+        return server.getEventListener();
+    }
+
+    @Override
     public TestingAccessControlManager getAccessControl()
     {
         return server.getAccessControl();
@@ -227,6 +235,12 @@ public final class StandaloneQueryRunner
         ConnectorId connectorId = server.createCatalog(catalogName, connectorName, properties);
 
         refreshNodes(connectorId);
+    }
+
+    @Override
+    public void loadFunctionNamespaceManager(String functionNamespaceManagerName, String catalogName, Map<String, String> properties)
+    {
+        server.getMetadata().getFunctionManager().loadFunctionNamespaceManager(functionNamespaceManagerName, catalogName, properties);
     }
 
     @Override

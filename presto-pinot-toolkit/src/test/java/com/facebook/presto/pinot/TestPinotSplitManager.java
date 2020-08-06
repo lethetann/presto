@@ -31,10 +31,10 @@ import java.util.Optional;
 import java.util.concurrent.Executors;
 
 import static com.facebook.airlift.concurrent.MoreFutures.getFutureValue;
+import static com.facebook.presto.common.type.TimeZoneKey.UTC_KEY;
 import static com.facebook.presto.pinot.PinotSplit.SplitType.BROKER;
 import static com.facebook.presto.pinot.PinotSplit.SplitType.SEGMENT;
 import static com.facebook.presto.spi.connector.NotPartitionedPartitionHandle.NOT_PARTITIONED;
-import static com.facebook.presto.spi.type.TimeZoneKey.UTC_KEY;
 import static java.util.Locale.ENGLISH;
 import static java.util.stream.Collectors.toList;
 import static org.testng.Assert.assertEquals;
@@ -57,12 +57,14 @@ public class TestPinotSplitManager
 
     private void testSegmentSplitsHelperNoFilter(PinotTableHandle table, int segmentsPerSplit, int expectedNumSplits, boolean expectFilter)
     {
-        PinotConfig pinotConfig = new PinotConfig().setPreferBrokerQueries(false);
+        PinotConfig pinotConfig = new PinotConfig().setForbidBrokerQueries(false);
         SessionHolder sessionHolder = new SessionHolder(pinotConfig);
         PlanBuilder planBuilder = createPlanBuilder(sessionHolder);
         PlanNode plan = tableScan(planBuilder, table, regionId, city, fare, secondsSinceEpoch);
-        PinotQueryGenerator.GeneratedPql generatedPql = new PinotQueryGenerator(pinotConfig, typeManager, functionMetadataManager, standardFunctionResolution).generate(plan, sessionHolder.getConnectorSession()).get().getGeneratedPql();
-        PinotTableHandle pinotTableHandle = new PinotTableHandle(table.getConnectorId(), table.getSchemaName(), table.getTableName(), Optional.of(false), Optional.of(generatedPql));
+        PinotQueryGenerator.PinotQueryGeneratorResult pinotQueryGeneratorResult = new PinotQueryGenerator(pinotConfig, typeManager, functionMetadataManager, standardFunctionResolution).generate(plan, sessionHolder.getConnectorSession()).get();
+        List<PinotColumnHandle> expectedHandles = ImmutableList.copyOf(pinotQueryGeneratorResult.getContext().getAssignments().values());
+        PinotQueryGenerator.GeneratedPinotQuery generatedPql = pinotQueryGeneratorResult.getGeneratedPinotQuery();
+        PinotTableHandle pinotTableHandle = new PinotTableHandle(table.getConnectorId(), table.getSchemaName(), table.getTableName(), Optional.of(false), Optional.of(expectedHandles), Optional.of(generatedPql));
         List<PinotSplit> splits = getSplitsHelper(pinotTableHandle, segmentsPerSplit, false);
         assertSplits(splits, expectedNumSplits, SEGMENT);
         splits.forEach(s -> assertSegmentSplitWellFormed(s, expectFilter));
@@ -70,12 +72,14 @@ public class TestPinotSplitManager
 
     private void testSegmentSplitsHelperWithFilter(PinotTableHandle table, int segmentsPerSplit, int expectedNumSplits)
     {
-        PinotConfig pinotConfig = new PinotConfig().setPreferBrokerQueries(false);
+        PinotConfig pinotConfig = new PinotConfig().setForbidBrokerQueries(false);
         SessionHolder sessionHolder = new SessionHolder(pinotConfig);
         PlanBuilder planBuilder = createPlanBuilder(sessionHolder);
         PlanNode plan = filter(planBuilder, tableScan(planBuilder, table, regionId, city, fare, secondsSinceEpoch), getRowExpression("city = 'Boston'", sessionHolder));
-        PinotQueryGenerator.GeneratedPql generatedPql = new PinotQueryGenerator(pinotConfig, typeManager, functionMetadataManager, standardFunctionResolution).generate(plan, sessionHolder.getConnectorSession()).get().getGeneratedPql();
-        PinotTableHandle pinotTableHandle = new PinotTableHandle(table.getConnectorId(), table.getSchemaName(), table.getTableName(), Optional.of(false), Optional.of(generatedPql));
+        PinotQueryGenerator.PinotQueryGeneratorResult pinotQueryGeneratorResult = new PinotQueryGenerator(pinotConfig, typeManager, functionMetadataManager, standardFunctionResolution).generate(plan, sessionHolder.getConnectorSession()).get();
+        List<PinotColumnHandle> expectedHandles = ImmutableList.copyOf(pinotQueryGeneratorResult.getContext().getAssignments().values());
+        PinotQueryGenerator.GeneratedPinotQuery generatedPql = pinotQueryGeneratorResult.getGeneratedPinotQuery();
+        PinotTableHandle pinotTableHandle = new PinotTableHandle(table.getConnectorId(), table.getSchemaName(), table.getTableName(), Optional.of(false), Optional.of(expectedHandles), Optional.of(generatedPql));
         List<PinotSplit> splits = getSplitsHelper(pinotTableHandle, segmentsPerSplit, false);
         assertSplits(splits, expectedNumSplits, SEGMENT);
         splits.forEach(s -> assertSegmentSplitWellFormed(s, true));
@@ -84,8 +88,8 @@ public class TestPinotSplitManager
     @Test
     public void testSplitsBroker()
     {
-        PinotQueryGenerator.GeneratedPql generatedPql = new PinotQueryGenerator.GeneratedPql(realtimeOnlyTable.getTableName(), String.format("SELECT %s, COUNT(1) FROM %s GROUP BY %s TOP %d", city.getColumnName(), realtimeOnlyTable.getTableName(), city.getColumnName(), pinotConfig.getTopNLarge()), ImmutableList.of(0, 1), 1, false, true);
-        PinotTableHandle pinotTableHandle = new PinotTableHandle(realtimeOnlyTable.getConnectorId(), realtimeOnlyTable.getSchemaName(), realtimeOnlyTable.getTableName(), Optional.of(true), Optional.of(generatedPql));
+        PinotQueryGenerator.GeneratedPinotQuery generatedPql = new PinotQueryGenerator.GeneratedPinotQuery(realtimeOnlyTable.getTableName(), String.format("SELECT %s, COUNT(1) FROM %s GROUP BY %s TOP %d", city.getColumnName(), realtimeOnlyTable.getTableName(), city.getColumnName(), pinotConfig.getTopNLarge()), PinotQueryGenerator.PinotQueryFormat.PQL, ImmutableList.of(0, 1), 1, false, true);
+        PinotTableHandle pinotTableHandle = new PinotTableHandle(realtimeOnlyTable.getConnectorId(), realtimeOnlyTable.getSchemaName(), realtimeOnlyTable.getTableName(), Optional.of(true), Optional.of(ImmutableList.of(city, derived("count"))), Optional.of(generatedPql));
         List<PinotSplit> splits = getSplitsHelper(pinotTableHandle, 1, false);
         assertSplits(splits, 1, BROKER);
     }
@@ -93,8 +97,8 @@ public class TestPinotSplitManager
     @Test(expectedExceptions = PinotSplitManager.QueryNotAdequatelyPushedDownException.class)
     public void testBrokerNonShortQuery()
     {
-        PinotQueryGenerator.GeneratedPql generatedPql = new PinotQueryGenerator.GeneratedPql(realtimeOnlyTable.getTableName(), String.format("SELECT %s FROM %s", city.getColumnName(), realtimeOnlyTable.getTableName()), ImmutableList.of(0), 0, false, false);
-        PinotTableHandle pinotTableHandle = new PinotTableHandle(realtimeOnlyTable.getConnectorId(), realtimeOnlyTable.getSchemaName(), realtimeOnlyTable.getTableName(), Optional.of(false), Optional.of(generatedPql));
+        PinotQueryGenerator.GeneratedPinotQuery generatedPql = new PinotQueryGenerator.GeneratedPinotQuery(realtimeOnlyTable.getTableName(), String.format("SELECT %s FROM %s", city.getColumnName(), realtimeOnlyTable.getTableName()), PinotQueryGenerator.PinotQueryFormat.PQL, ImmutableList.of(0), 0, false, false);
+        PinotTableHandle pinotTableHandle = new PinotTableHandle(realtimeOnlyTable.getConnectorId(), realtimeOnlyTable.getSchemaName(), realtimeOnlyTable.getTableName(), Optional.of(false), Optional.of(ImmutableList.of(city)), Optional.of(generatedPql));
         List<PinotSplit> splits = getSplitsHelper(pinotTableHandle, 1, true);
         assertSplits(splits, 1, BROKER);
     }

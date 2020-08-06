@@ -13,14 +13,12 @@
  */
 package com.facebook.presto.verifier.framework;
 
-import com.facebook.presto.spi.type.TypeManager;
+import com.facebook.presto.common.type.TypeManager;
 import com.facebook.presto.sql.parser.SqlParser;
-import com.facebook.presto.verifier.annotation.ForTest;
 import com.facebook.presto.verifier.checksum.ChecksumValidator;
-import com.facebook.presto.verifier.prestoaction.NodeResourceClient;
-import com.facebook.presto.verifier.prestoaction.PrestoAction;
-import com.facebook.presto.verifier.prestoaction.PrestoActionFactory;
-import com.facebook.presto.verifier.resolver.FailureResolverConfig;
+import com.facebook.presto.verifier.prestoaction.QueryActions;
+import com.facebook.presto.verifier.prestoaction.QueryActionsFactory;
+import com.facebook.presto.verifier.prestoaction.SqlExceptionClassifier;
 import com.facebook.presto.verifier.resolver.FailureResolverFactoryContext;
 import com.facebook.presto.verifier.resolver.FailureResolverManager;
 import com.facebook.presto.verifier.resolver.FailureResolverManagerFactory;
@@ -29,6 +27,8 @@ import com.facebook.presto.verifier.rewrite.QueryRewriterFactory;
 
 import javax.inject.Inject;
 
+import java.util.Optional;
+
 import static com.facebook.presto.verifier.framework.VerifierUtil.PARSING_OPTIONS;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
@@ -36,63 +36,66 @@ import static java.util.Objects.requireNonNull;
 public class VerificationFactory
 {
     private final SqlParser sqlParser;
-    private final PrestoActionFactory prestoActionFactory;
+    private final QueryActionsFactory queryActionsFactory;
     private final QueryRewriterFactory queryRewriterFactory;
     private final FailureResolverManagerFactory failureResolverManagerFactory;
-    private final NodeResourceClient testResourceClient;
     private final ChecksumValidator checksumValidator;
+    private final SqlExceptionClassifier exceptionClassifier;
     private final VerifierConfig verifierConfig;
     private final TypeManager typeManager;
-    private final FailureResolverConfig failureResolverConfig;
+    private final DeterminismAnalyzerConfig determinismAnalyzerConfig;
 
     @Inject
     public VerificationFactory(
             SqlParser sqlParser,
-            PrestoActionFactory prestoActionFactory,
+            QueryActionsFactory queryActionsFactory,
             QueryRewriterFactory queryRewriterFactory,
             FailureResolverManagerFactory failureResolverManagerFactory,
-            @ForTest NodeResourceClient testResourceClient,
             ChecksumValidator checksumValidator,
+            SqlExceptionClassifier exceptionClassifier,
             VerifierConfig verifierConfig,
             TypeManager typeManager,
-            FailureResolverConfig failureResolverConfig)
+            DeterminismAnalyzerConfig determinismAnalyzerConfig)
     {
         this.sqlParser = requireNonNull(sqlParser, "sqlParser is null");
-        this.prestoActionFactory = requireNonNull(prestoActionFactory, "prestoActionFactory is null");
+        this.queryActionsFactory = requireNonNull(queryActionsFactory, "queryActionsFactory is null");
         this.queryRewriterFactory = requireNonNull(queryRewriterFactory, "queryRewriterFactory is null");
         this.failureResolverManagerFactory = requireNonNull(failureResolverManagerFactory, "failureResolverManagerFactory is null");
-        this.testResourceClient = requireNonNull(testResourceClient, "testResourceClient is null");
         this.checksumValidator = requireNonNull(checksumValidator, "checksumValidator is null");
+        this.exceptionClassifier = requireNonNull(exceptionClassifier, "exceptionClassifier is null");
         this.verifierConfig = requireNonNull(verifierConfig, "config is null");
         this.typeManager = requireNonNull(typeManager, "typeManager is null");
-        this.failureResolverConfig = requireNonNull(failureResolverConfig, "failureResolverConfig is null");
+        this.determinismAnalyzerConfig = requireNonNull(determinismAnalyzerConfig, "determinismAnalyzerConfig is null");
     }
 
-    public Verification get(VerificationResubmitter verificationResubmitter, SourceQuery sourceQuery)
+    public Verification get(SourceQuery sourceQuery, Optional<VerificationContext> existingContext)
     {
         QueryType queryType = QueryType.of(sqlParser.createStatement(sourceQuery.getControlQuery(), PARSING_OPTIONS));
         switch (queryType.getCategory()) {
             case DATA_PRODUCING:
-                VerificationContext verificationContext = new VerificationContext();
-                PrestoAction prestoAction = prestoActionFactory.create(sourceQuery, verificationContext);
-                QueryRewriter queryRewriter = queryRewriterFactory.create(prestoAction);
-                FailureResolverManager failureResolverManager = failureResolverManagerFactory.create(new FailureResolverFactoryContext(
-                        sqlParser,
-                        prestoAction,
-                        testResourceClient,
-                        failureResolverConfig));
-                LimitQueryDeterminismAnalyzer limitQueryDeterminismAnalyzer = new LimitQueryDeterminismAnalyzer(prestoAction, verifierConfig);
+                VerificationContext verificationContext = existingContext.map(VerificationContext::createForResubmission)
+                        .orElseGet(() -> VerificationContext.create(sourceQuery.getName(), sourceQuery.getSuite()));
+                QueryActions queryActions = queryActionsFactory.create(sourceQuery, verificationContext);
+                QueryRewriter queryRewriter = queryRewriterFactory.create(queryActions.getHelperAction());
+                DeterminismAnalyzer determinismAnalyzer = new DeterminismAnalyzer(
+                        sourceQuery,
+                        queryActions.getHelperAction(),
+                        queryRewriter,
+                        checksumValidator,
+                        typeManager,
+                        determinismAnalyzerConfig);
+                FailureResolverManager failureResolverManager = failureResolverManagerFactory.create(new FailureResolverFactoryContext(sqlParser, queryActions.getHelperAction()));
                 return new DataVerification(
-                        verificationResubmitter,
-                        prestoAction,
+                        queryActions,
                         sourceQuery,
                         queryRewriter,
+                        determinismAnalyzer,
                         failureResolverManager,
+                        exceptionClassifier,
                         verificationContext,
                         verifierConfig,
                         typeManager,
-                        checksumValidator,
-                        limitQueryDeterminismAnalyzer);
+                        checksumValidator);
             default:
                 throw new IllegalStateException(format("Unsupported query type: %s", queryType));
         }

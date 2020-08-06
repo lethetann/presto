@@ -13,20 +13,20 @@
  */
 package com.facebook.presto.orc.reader;
 
-import com.facebook.presto.memory.context.AggregatedMemoryContext;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockLease;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.orc.OrcAggregatedMemoryContext;
 import com.facebook.presto.orc.StreamDescriptor;
 import com.facebook.presto.orc.TupleDomainFilter;
 import com.facebook.presto.orc.metadata.ColumnEncoding;
 import com.facebook.presto.orc.stream.InputStreamSources;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockLease;
-import com.facebook.presto.spi.type.Type;
 import com.google.common.io.Closer;
 import org.openjdk.jol.info.ClassLayout;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
@@ -46,15 +46,15 @@ public class LongSelectiveStreamReader
             StreamDescriptor streamDescriptor,
             Optional<TupleDomainFilter> filter,
             Optional<Type> outputType,
-            AggregatedMemoryContext systemMemoryContext)
+            OrcAggregatedMemoryContext systemMemoryContext)
     {
         this.streamDescriptor = requireNonNull(streamDescriptor, "streamDescriptor is null");
-        directReader = new LongDirectSelectiveStreamReader(streamDescriptor, filter, outputType, systemMemoryContext.newLocalMemoryContext(LongSelectiveStreamReader.class.getSimpleName()));
-        dictionaryReader = new LongDictionarySelectiveStreamReader(streamDescriptor, filter, outputType, systemMemoryContext.newLocalMemoryContext(LongSelectiveStreamReader.class.getSimpleName()));
+        directReader = new LongDirectSelectiveStreamReader(streamDescriptor, filter, outputType, systemMemoryContext.newOrcLocalMemoryContext(LongSelectiveStreamReader.class.getSimpleName()));
+        dictionaryReader = new LongDictionarySelectiveStreamReader(streamDescriptor, filter, outputType, systemMemoryContext.newOrcLocalMemoryContext(LongSelectiveStreamReader.class.getSimpleName()));
     }
 
     @Override
-    public void startStripe(InputStreamSources dictionaryStreamSources, List<ColumnEncoding> encoding)
+    public void startStripe(InputStreamSources dictionaryStreamSources, Map<Integer, ColumnEncoding> encoding)
             throws IOException
     {
         ColumnEncoding.ColumnEncodingKind kind = encoding.get(streamDescriptor.getStreamId())

@@ -13,11 +13,11 @@
  */
 package com.facebook.presto.operator;
 
+import com.facebook.presto.common.Page;
 import com.facebook.presto.memory.context.LocalMemoryContext;
 import com.facebook.presto.metadata.Split;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ConnectorPageSource;
-import com.facebook.presto.spi.Page;
 import com.facebook.presto.spi.TableHandle;
 import com.facebook.presto.spi.UpdatablePageSource;
 import com.facebook.presto.spi.plan.PlanNodeId;
@@ -254,19 +254,26 @@ public class TableScanOperator
             page = page.getLoadedPage();
 
             // update operator stats
-            long endCompletedBytes = source.getCompletedBytes();
-            long endCompletedPositions = source.getCompletedPositions();
-            long endReadTimeNanos = source.getReadTimeNanos();
-            operatorContext.recordRawInputWithTiming(endCompletedBytes - completedBytes, endCompletedPositions - completedPositions, endReadTimeNanos - readTimeNanos);
             operatorContext.recordProcessedInput(page.getSizeInBytes(), page.getPositionCount());
-            completedBytes = endCompletedBytes;
-            completedPositions = endCompletedPositions;
-            readTimeNanos = endReadTimeNanos;
+            recordSourceRawInputStats();
         }
 
         // updating system memory usage should happen after page is loaded.
         systemMemoryContext.setBytes(source.getSystemMemoryUsage());
 
         return page;
+    }
+
+    private void recordSourceRawInputStats()
+    {
+        checkState(source != null, "source must not be null");
+        // update operator stats
+        long endCompletedBytes = source.getCompletedBytes();
+        long endCompletedPositions = source.getCompletedPositions();
+        long endReadTimeNanos = source.getReadTimeNanos();
+        operatorContext.recordRawInputWithTiming(endCompletedBytes - completedBytes, endCompletedPositions - completedPositions, endReadTimeNanos - readTimeNanos);
+        completedBytes = endCompletedBytes;
+        completedPositions = endCompletedPositions;
+        readTimeNanos = endReadTimeNanos;
     }
 }

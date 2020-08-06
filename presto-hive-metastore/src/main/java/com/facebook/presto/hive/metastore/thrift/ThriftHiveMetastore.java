@@ -13,6 +13,8 @@
  */
 package com.facebook.presto.hive.metastore.thrift;
 
+import com.facebook.presto.common.predicate.Domain;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.hive.HiveBasicStatistics;
 import com.facebook.presto.hive.HiveType;
 import com.facebook.presto.hive.HiveViewNotSupportedException;
@@ -23,6 +25,7 @@ import com.facebook.presto.hive.TableAlreadyExistsException;
 import com.facebook.presto.hive.metastore.Column;
 import com.facebook.presto.hive.metastore.HiveColumnStatistics;
 import com.facebook.presto.hive.metastore.HivePrivilegeInfo;
+import com.facebook.presto.hive.metastore.MetastoreUtil;
 import com.facebook.presto.hive.metastore.PartitionStatistics;
 import com.facebook.presto.hive.metastore.PartitionWithStatistics;
 import com.facebook.presto.spi.PrestoException;
@@ -32,7 +35,6 @@ import com.facebook.presto.spi.TableNotFoundException;
 import com.facebook.presto.spi.security.PrestoPrincipal;
 import com.facebook.presto.spi.security.RoleGrant;
 import com.facebook.presto.spi.statistics.ColumnStatisticType;
-import com.facebook.presto.spi.type.Type;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
@@ -75,19 +77,20 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import static com.facebook.presto.hive.HiveBasicStatistics.createEmptyStatistics;
-import static com.facebook.presto.hive.MetastoreErrorCode.HIVE_METASTORE_ERROR;
+import static com.facebook.presto.hive.HiveErrorCode.HIVE_METASTORE_ERROR;
 import static com.facebook.presto.hive.metastore.HivePrivilegeInfo.HivePrivilege;
 import static com.facebook.presto.hive.metastore.HivePrivilegeInfo.HivePrivilege.OWNERSHIP;
 import static com.facebook.presto.hive.metastore.MetastoreUtil.PRESTO_VIEW_FLAG;
+import static com.facebook.presto.hive.metastore.MetastoreUtil.convertPredicateToParts;
+import static com.facebook.presto.hive.metastore.MetastoreUtil.getHiveBasicStatistics;
+import static com.facebook.presto.hive.metastore.MetastoreUtil.updateStatisticsParameters;
 import static com.facebook.presto.hive.metastore.thrift.ThriftMetastoreUtil.createMetastoreColumnStatistics;
 import static com.facebook.presto.hive.metastore.thrift.ThriftMetastoreUtil.fromMetastoreApiPrincipalType;
 import static com.facebook.presto.hive.metastore.thrift.ThriftMetastoreUtil.fromMetastoreApiTable;
 import static com.facebook.presto.hive.metastore.thrift.ThriftMetastoreUtil.fromPrestoPrincipalType;
 import static com.facebook.presto.hive.metastore.thrift.ThriftMetastoreUtil.fromRolePrincipalGrants;
-import static com.facebook.presto.hive.metastore.thrift.ThriftMetastoreUtil.getHiveBasicStatistics;
 import static com.facebook.presto.hive.metastore.thrift.ThriftMetastoreUtil.parsePrivilege;
 import static com.facebook.presto.hive.metastore.thrift.ThriftMetastoreUtil.toMetastoreApiPartition;
-import static com.facebook.presto.hive.metastore.thrift.ThriftMetastoreUtil.updateStatisticsParameters;
 import static com.facebook.presto.spi.StandardErrorCode.ALREADY_EXISTS;
 import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
 import static com.facebook.presto.spi.security.PrincipalType.USER;
@@ -104,6 +107,7 @@ import static java.util.stream.Collectors.toSet;
 import static org.apache.hadoop.hive.common.FileUtils.makePartName;
 import static org.apache.hadoop.hive.metastore.api.HiveObjectType.TABLE;
 import static org.apache.hadoop.hive.metastore.api.hive_metastoreConstants.HIVE_FILTER_FIELD_PARAMS;
+import static org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector.Category.PRIMITIVE;
 
 @ThreadSafe
 public class ThriftHiveMetastore
@@ -248,7 +252,7 @@ public class ThriftHiveMetastore
     @Override
     public Set<ColumnStatisticType> getSupportedColumnStatistics(Type type)
     {
-        return ThriftMetastoreUtil.getSupportedColumnStatistics(type);
+        return MetastoreUtil.getSupportedColumnStatistics(type);
     }
 
     private static boolean isPrestoView(Table table)
@@ -409,6 +413,7 @@ public class ThriftHiveMetastore
         com.facebook.presto.hive.metastore.Table table = fromMetastoreApiTable(modifiedTable);
         OptionalLong rowCount = basicStatistics.getRowCount();
         List<ColumnStatisticsObj> metastoreColumnStatistics = updatedStatistics.getColumnStatistics().entrySet().stream()
+                .filter(entry -> table.getColumn(entry.getKey()).get().getType().getTypeInfo().getCategory() == PRIMITIVE)
                 .map(entry -> createMetastoreColumnStatistics(entry.getKey(), table.getColumn(entry.getKey()).get().getType(), entry.getValue(), rowCount))
                 .collect(toImmutableList());
         if (!metastoreColumnStatistics.isEmpty()) {
@@ -940,6 +945,13 @@ public class ThriftHiveMetastore
         catch (Exception e) {
             throw propagate(e);
         }
+    }
+
+    @Override
+    public List<String> getPartitionNamesByFilter(String databaseName, String tableName, Map<Column, Domain> partitionPredicates)
+    {
+        List<String> parts = convertPredicateToParts(partitionPredicates);
+        return getPartitionNamesByParts(databaseName, tableName, parts).orElse(ImmutableList.of());
     }
 
     @Override

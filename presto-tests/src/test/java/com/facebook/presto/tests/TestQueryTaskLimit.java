@@ -15,8 +15,10 @@ package com.facebook.presto.tests;
 
 import com.facebook.presto.Session;
 import com.facebook.presto.server.BasicQueryInfo;
+import com.facebook.presto.spi.QueryId;
 import com.facebook.presto.tpch.TpchPlugin;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
@@ -26,27 +28,43 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 
+import static com.facebook.presto.execution.QueryState.QUEUED;
+import static com.facebook.presto.execution.QueryState.RUNNING;
+import static com.facebook.presto.execution.TestQueryRunnerUtil.createQuery;
+import static com.facebook.presto.execution.TestQueryRunnerUtil.waitForQueryState;
+import static com.facebook.presto.execution.TestQueues.LONG_LASTING_QUERY;
+import static com.facebook.presto.execution.TestQueues.newSession;
 import static com.facebook.presto.spi.StandardErrorCode.QUERY_HAS_TOO_MANY_STAGES;
 import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
 import static java.util.concurrent.Executors.newCachedThreadPool;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
+import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertNotNull;
+import static org.testng.Assert.assertTrue;
 
+@Test(singleThreaded = true)
 public class TestQueryTaskLimit
 {
     private ExecutorService executor;
+    private Session defaultSession;
 
     @BeforeClass
     public void setUp()
     {
         executor = newCachedThreadPool();
+        defaultSession = testSessionBuilder()
+                .setCatalog("tpch")
+                .setSchema("sf1000")
+                .build();
     }
 
     @AfterClass(alwaysRun = true)
     public void shutdown()
+            throws Exception
     {
         executor.shutdownNow();
+        assertTrue(executor.awaitTermination(10, SECONDS));
         executor = null;
     }
 
@@ -54,14 +72,9 @@ public class TestQueryTaskLimit
     public void testExceedTaskLimit()
             throws Exception
     {
-        Session defaultSession = testSessionBuilder()
-                .setCatalog("tpch")
-                .setSchema("sf1000")
-                .build();
-
         ImmutableMap<String, String> extraProperties = ImmutableMap.<String, String>builder()
-                .put("experimental.max-total-running-task-count", "4")
-                .put("experimental.max-query-running-task-count", "4")
+                .put("max-total-running-task-count-to-kill-query", "4")
+                .put("max-query-running-task-count", "4")
                 .build();
 
         try (DistributedQueryRunner queryRunner = createQueryRunner(defaultSession, extraProperties)) {
@@ -70,6 +83,24 @@ public class TestQueryTaskLimit
             waitForQueryToBeKilled(queryRunner);
 
             query.get();
+        }
+    }
+
+    @Test(timeOut = 30_000)
+    public void testQueuingWhenTaskLimitExceeds()
+            throws Exception
+    {
+        try (DistributedQueryRunner queryRunner = createQueryRunner(defaultSession, ImmutableMap.of())) {
+            QueryId firstQuery = createQuery(queryRunner, newSession("test", ImmutableSet.of(), null), LONG_LASTING_QUERY);
+            waitForQueryState(queryRunner, firstQuery, RUNNING);
+
+            queryRunner.getCoordinator().getResourceGroupManager().get().setTaskLimitExceeded(true);
+
+            QueryId secondQuery = createQuery(queryRunner, newSession("test", ImmutableSet.of(), null), LONG_LASTING_QUERY);
+            waitForQueryState(queryRunner, secondQuery, QUEUED);
+
+            queryRunner.getCoordinator().getResourceGroupManager().get().setTaskLimitExceeded(false);
+            waitForQueryState(queryRunner, secondQuery, RUNNING);
         }
     }
 

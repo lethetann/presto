@@ -13,10 +13,23 @@
  */
 package com.facebook.presto.hive;
 
+import com.facebook.presto.common.predicate.NullableValue;
+import com.facebook.presto.common.type.CharType;
+import com.facebook.presto.common.type.DecimalType;
+import com.facebook.presto.common.type.Decimals;
+import com.facebook.presto.common.type.NamedTypeSignature;
+import com.facebook.presto.common.type.RowFieldName;
+import com.facebook.presto.common.type.StandardTypes;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeManager;
+import com.facebook.presto.common.type.TypeSignature;
+import com.facebook.presto.common.type.TypeSignatureParameter;
+import com.facebook.presto.common.type.VarcharType;
 import com.facebook.presto.hadoop.TextLineLengthLimitExceededException;
 import com.facebook.presto.hive.avro.PrestoAvroSerDe;
 import com.facebook.presto.hive.metastore.Column;
 import com.facebook.presto.hive.metastore.Table;
+import com.facebook.presto.hive.pagefile.PageInputFormat;
 import com.facebook.presto.hive.util.FooterAwareRecordReader;
 import com.facebook.presto.orc.OrcReader;
 import com.facebook.presto.spi.ColumnMetadata;
@@ -24,18 +37,6 @@ import com.facebook.presto.spi.ConnectorTableHandle;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.RecordCursor;
 import com.facebook.presto.spi.SchemaTableName;
-import com.facebook.presto.spi.predicate.NullableValue;
-import com.facebook.presto.spi.type.CharType;
-import com.facebook.presto.spi.type.DecimalType;
-import com.facebook.presto.spi.type.Decimals;
-import com.facebook.presto.spi.type.NamedTypeSignature;
-import com.facebook.presto.spi.type.RowFieldName;
-import com.facebook.presto.spi.type.StandardTypes;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeManager;
-import com.facebook.presto.spi.type.TypeSignature;
-import com.facebook.presto.spi.type.TypeSignatureParameter;
-import com.facebook.presto.spi.type.VarcharType;
 import com.google.common.base.Joiner;
 import com.google.common.base.Splitter;
 import com.google.common.base.VerifyException;
@@ -97,6 +98,21 @@ import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.Chars.isCharType;
+import static com.facebook.presto.common.type.Chars.trimTrailingSpaces;
+import static com.facebook.presto.common.type.DateType.DATE;
+import static com.facebook.presto.common.type.DecimalType.createDecimalType;
+import static com.facebook.presto.common.type.Decimals.isLongDecimal;
+import static com.facebook.presto.common.type.Decimals.isShortDecimal;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.RealType.REAL;
+import static com.facebook.presto.common.type.SmallintType.SMALLINT;
+import static com.facebook.presto.common.type.TimestampType.TIMESTAMP;
+import static com.facebook.presto.common.type.TinyintType.TINYINT;
+import static com.facebook.presto.common.type.Varchars.isVarcharType;
 import static com.facebook.presto.hive.HiveColumnHandle.ColumnType.PARTITION_KEY;
 import static com.facebook.presto.hive.HiveColumnHandle.ColumnType.REGULAR;
 import static com.facebook.presto.hive.HiveColumnHandle.MAX_PARTITION_KEY_COLUMN_INDEX;
@@ -107,33 +123,18 @@ import static com.facebook.presto.hive.HiveColumnHandle.pathColumnHandle;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_BAD_DATA;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_CANNOT_OPEN_SPLIT;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_FILE_MISSING_COLUMN_NAMES;
+import static com.facebook.presto.hive.HiveErrorCode.HIVE_INVALID_METADATA;
+import static com.facebook.presto.hive.HiveErrorCode.HIVE_INVALID_PARTITION_VALUE;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_INVALID_VIEW_DATA;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_SERDE_NOT_FOUND;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_TABLE_BUCKETING_IS_IGNORED;
-import static com.facebook.presto.hive.MetastoreErrorCode.HIVE_INVALID_METADATA;
-import static com.facebook.presto.hive.MetastoreErrorCode.HIVE_INVALID_PARTITION_VALUE;
-import static com.facebook.presto.hive.MetastoreErrorCode.HIVE_UNSUPPORTED_FORMAT;
+import static com.facebook.presto.hive.HiveErrorCode.HIVE_UNSUPPORTED_FORMAT;
 import static com.facebook.presto.hive.metastore.MetastoreUtil.HIVE_DEFAULT_DYNAMIC_PARTITION;
 import static com.facebook.presto.hive.metastore.MetastoreUtil.checkCondition;
 import static com.facebook.presto.hive.util.ConfigurationUtils.copy;
 import static com.facebook.presto.hive.util.ConfigurationUtils.toJobConf;
 import static com.facebook.presto.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
 import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.Chars.isCharType;
-import static com.facebook.presto.spi.type.Chars.trimTrailingSpaces;
-import static com.facebook.presto.spi.type.DateType.DATE;
-import static com.facebook.presto.spi.type.DecimalType.createDecimalType;
-import static com.facebook.presto.spi.type.Decimals.isLongDecimal;
-import static com.facebook.presto.spi.type.Decimals.isShortDecimal;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
-import static com.facebook.presto.spi.type.RealType.REAL;
-import static com.facebook.presto.spi.type.SmallintType.SMALLINT;
-import static com.facebook.presto.spi.type.TimestampType.TIMESTAMP;
-import static com.facebook.presto.spi.type.TinyintType.TINYINT;
-import static com.facebook.presto.spi.type.Varchars.isVarcharType;
 import static com.google.common.base.MoreObjects.firstNonNull;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
@@ -233,7 +234,8 @@ public final class HiveUtil
             RecordReader<WritableComparable, Writable> recordReader = (RecordReader<WritableComparable, Writable>) inputFormat.getRecordReader(fileSplit, jobConf, Reporter.NULL);
 
             int headerCount = getHeaderCount(schema);
-            if (headerCount > 0) {
+            //  Only skip header rows when the split is at the beginning of the file
+            if (start == 0 && headerCount > 0) {
                 Utilities.skipHeader(recordReader, headerCount, recordReader.createKey(), recordReader.createValue());
             }
 
@@ -311,6 +313,10 @@ public final class HiveUtil
             return MapredParquetInputFormat.class;
         }
 
+        if (PageInputFormat.class.getSimpleName().equals(inputFormatName)) {
+            return PageInputFormat.class;
+        }
+
         Class<?> clazz = conf.getClassByName(inputFormatName);
         return (Class<? extends InputFormat<?, ?>>) clazz.asSubclass(InputFormat.class);
     }
@@ -335,12 +341,12 @@ public final class HiveUtil
 
     public static boolean isSplittable(InputFormat<?, ?> inputFormat, FileSystem fileSystem, Path path)
     {
-        // ORC uses a custom InputFormat but is always splittable
-        if (inputFormat.getClass().getSimpleName().equals("OrcInputFormat")) {
+        if (inputFormat.getClass().getSimpleName().equals("OrcInputFormat") ||
+                inputFormat.getClass().getSimpleName().equals("RCFileInputFormat")) {
             return true;
         }
 
-        // use reflection to get isSplittable method on FileInputFormat
+        // use reflection to get isSplittable method on inputFormat
         Method method = null;
         for (Class<?> clazz = inputFormat.getClass(); clazz != null; clazz = clazz.getSuperclass()) {
             try {

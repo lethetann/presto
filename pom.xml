@@ -5,12 +5,12 @@
     <parent>
         <groupId>com.facebook.airlift</groupId>
         <artifactId>airbase</artifactId>
-        <version>95</version>
+        <version>99</version>
     </parent>
 
     <groupId>com.facebook.presto</groupId>
     <artifactId>presto-root</artifactId>
-    <version>0.231-SNAPSHOT</version>
+    <version>0.240-SNAPSHOT</version>
     <packaging>pom</packaging>
 
     <name>presto-root</name>
@@ -45,15 +45,15 @@
         <air.maven.version>3.3.9</air.maven.version>
 
         <dep.antlr.version>4.7.1</dep.antlr.version>
-        <dep.airlift.version>0.187</dep.airlift.version>
+        <dep.airlift.version>0.193</dep.airlift.version>
         <dep.packaging.version>${dep.airlift.version}</dep.packaging.version>
-        <dep.slice.version>0.36</dep.slice.version>
+        <dep.slice.version>0.38</dep.slice.version>
         <dep.testing-mysql-server-5.version>0.6</dep.testing-mysql-server-5.version>
         <dep.aws-sdk.version>1.11.445</dep.aws-sdk.version>
         <dep.okhttp.version>3.9.0</dep.okhttp.version>
         <dep.jdbi3.version>3.4.0</dep.jdbi3.version>
-        <dep.drift.version>1.22</dep.drift.version>
-        <dep.joda.version>2.10</dep.joda.version>
+        <dep.drift.version>1.25</dep.drift.version>
+        <dep.joda.version>2.10.5</dep.joda.version>
         <dep.tempto.version>1.50</dep.tempto.version>
         <dep.testng.version>6.10</dep.testng.version>
         <dep.assertj-core.version>3.8.0</dep.assertj-core.version>
@@ -62,6 +62,10 @@
         <dep.nexus-staging-plugin.version>1.6.8</dep.nexus-staging-plugin.version>
         <dep.asm.version>6.2.1</dep.asm.version>
         <dep.gcs.version>1.9.17</dep.gcs.version>
+        <dep.alluxio.version>2.2.2-2</dep.alluxio.version>
+        <dep.kafka.version>2.3.1</dep.kafka.version>
+        <dep.druid.version>0.17.0</dep.druid.version>
+        <dep.jaxb.version>2.3.1</dep.jaxb.version>
 
         <!--
           America/Bahia_Banderas has:
@@ -73,7 +77,7 @@
         <air.test.timezone>America/Bahia_Banderas</air.test.timezone>
         <air.test.parallel>methods</air.test.parallel>
         <air.test.thread-count>2</air.test.thread-count>
-        <air.test.jvmsize>2g</air.test.jvmsize>
+        <air.test.jvmsize>4g</air.test.jvmsize>
 
         <air.javadoc.lint>-missing</air.javadoc.lint>
     </properties>
@@ -95,8 +99,10 @@
         <module>presto-parquet</module>
         <module>presto-rcfile</module>
         <module>presto-hive</module>
+        <module>presto-hive-common</module>
         <module>presto-hive-hadoop2</module>
         <module>presto-hive-metastore</module>
+        <module>presto-i18n-functions</module>
         <module>presto-teradata-functions</module>
         <module>presto-example-http</module>
         <module>presto-local-file</module>
@@ -143,9 +149,17 @@
         <module>presto-proxy</module>
         <module>presto-kudu</module>
         <module>presto-elasticsearch</module>
-        <module>presto-sql-function</module>
+        <module>presto-function-namespace-managers</module>
         <module>presto-expressions</module>
         <module>presto-benchmark-runner</module>
+        <module>presto-spark-classloader-interface</module>
+        <module>presto-spark-base</module>
+        <module>presto-spark</module>
+        <module>presto-spark-package</module>
+        <module>presto-spark-launcher</module>
+        <module>presto-spark-testing</module>
+        <module>presto-druid</module>
+        <module>presto-common</module>
     </modules>
 
     <dependencyManagement>
@@ -165,6 +179,19 @@
             <dependency>
                 <groupId>com.facebook.presto</groupId>
                 <artifactId>presto-spi</artifactId>
+                <version>${project.version}</version>
+                <type>test-jar</type>
+            </dependency>
+
+            <dependency>
+                <groupId>com.facebook.presto</groupId>
+                <artifactId>presto-common</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.facebook.presto</groupId>
+                <artifactId>presto-common</artifactId>
                 <version>${project.version}</version>
                 <type>test-jar</type>
             </dependency>
@@ -233,6 +260,12 @@
             <dependency>
                 <groupId>com.facebook.presto</groupId>
                 <artifactId>presto-hive</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.facebook.presto</groupId>
+                <artifactId>presto-hive-common</artifactId>
                 <version>${project.version}</version>
             </dependency>
 
@@ -435,6 +468,13 @@
 
             <dependency>
                 <groupId>com.facebook.presto</groupId>
+                <artifactId>presto-server</artifactId>
+                <version>${project.version}</version>
+                <type>tar.gz</type>
+            </dependency>
+
+            <dependency>
+                <groupId>com.facebook.presto</groupId>
                 <artifactId>presto-server-rpm</artifactId>
                 <version>${project.version}</version>
             </dependency>
@@ -471,7 +511,31 @@
 
             <dependency>
                 <groupId>com.facebook.presto</groupId>
-                <artifactId>presto-sql-function</artifactId>
+                <artifactId>presto-spark-classloader-interface</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.facebook.presto</groupId>
+                <artifactId>presto-spark</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.facebook.presto</groupId>
+                <artifactId>presto-spark-base</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.facebook.presto</groupId>
+                <artifactId>presto-spark-launcher</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.facebook.presto</groupId>
+                <artifactId>presto-spark-package</artifactId>
                 <version>${project.version}</version>
             </dependency>
 
@@ -484,7 +548,7 @@
             <dependency>
                 <groupId>com.facebook.presto.hadoop</groupId>
                 <artifactId>hadoop-apache2</artifactId>
-                <version>2.7.4-5</version>
+                <version>2.7.4-8</version>
             </dependency>
 
             <dependency>
@@ -496,7 +560,7 @@
             <dependency>
                 <groupId>com.facebook.presto.orc</groupId>
                 <artifactId>orc-protobuf</artifactId>
-                <version>7</version>
+                <version>11</version>
             </dependency>
 
             <dependency>
@@ -532,6 +596,12 @@
             </dependency>
 
             <dependency>
+                <groupId>com.facebook.presto</groupId>
+                <artifactId>presto-function-namespace-managers</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <dependency>
                 <groupId>com.facebook.hive</groupId>
                 <artifactId>hive-dwrf</artifactId>
                 <version>0.8.3</version>
@@ -540,7 +610,7 @@
             <dependency>
                 <groupId>io.airlift</groupId>
                 <artifactId>aircompressor</artifactId>
-                <version>0.13</version>
+                <version>0.15</version>
             </dependency>
 
             <dependency>
@@ -676,12 +746,6 @@
             </dependency>
 
             <dependency>
-                <groupId>io.airlift</groupId>
-                <artifactId>joda-to-java-time-bridge</artifactId>
-                <version>3</version>
-            </dependency>
-
-            <dependency>
                 <groupId>com.facebook.drift</groupId>
                 <artifactId>drift-api</artifactId>
                 <version>${dep.drift.version}</version>
@@ -718,6 +782,12 @@
             </dependency>
 
             <dependency>
+                <groupId>com.facebook.drift</groupId>
+                <artifactId>drift-transport-spi</artifactId>
+                <version>${dep.drift.version}</version>
+            </dependency>
+
+            <dependency>
                 <groupId>io.airlift.tpch</groupId>
                 <artifactId>tpch</artifactId>
                 <version>0.10</version>
@@ -733,6 +803,24 @@
                         <artifactId>annotations</artifactId>
                     </exclusion>
                 </exclusions>
+            </dependency>
+
+            <dependency>
+                <groupId>com.facebook.presto</groupId>
+                <artifactId>presto-i18n-functions</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>javax.xml.bind</groupId>
+                <artifactId>jaxb-api</artifactId>
+                <version>${dep.jaxb.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.glassfish.jaxb</groupId>
+                <artifactId>jaxb-runtime</artifactId>
+                <version>${dep.jaxb.version}</version>
             </dependency>
 
             <dependency>
@@ -762,7 +850,7 @@
             <dependency>
                 <groupId>com.h2database</groupId>
                 <artifactId>h2</artifactId>
-                <version>1.4.197</version>
+                <version>1.4.199</version>
             </dependency>
 
             <dependency>
@@ -912,6 +1000,50 @@
             </dependency>
 
             <dependency>
+                <groupId>org.apache.hudi</groupId>
+                <artifactId>hudi-hadoop-mr</artifactId>
+                <version>0.5.1-incubating</version>
+                <exclusions>
+                    <exclusion>
+                        <groupId>org.objenesis</groupId>
+                        <artifactId>objenesis</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>commons-logging</groupId>
+                        <artifactId>commons-logging</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.slf4j</groupId>
+                        <artifactId>jcl-over-slf4j</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>com.fasterxml.jackson.core</groupId>
+                        <artifactId>jackson-annotations</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>com.fasterxml.jackson.core</groupId>
+                        <artifactId>jackson-databind</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.apache.httpcomponents</groupId>
+                        <artifactId>httpclient</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.apache.httpcomponents</groupId>
+                        <artifactId>fluent-hc</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.rocksdb</groupId>
+                        <artifactId>rocksdbjni</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>com.esotericsoftware</groupId>
+                        <artifactId>kryo-shaded</artifactId>
+                    </exclusion>
+                </exclusions>
+            </dependency>
+
+            <dependency>
                 <groupId>net.sf.opencsv</groupId>
                 <artifactId>opencsv</artifactId>
                 <version>2.3</version>
@@ -926,13 +1058,13 @@
             <dependency>
                 <groupId>com.facebook.airlift.discovery</groupId>
                 <artifactId>discovery-server</artifactId>
-                <version>1.30</version>
+                <version>1.32</version>
             </dependency>
 
             <dependency>
                 <groupId>org.alluxio</groupId>
                 <artifactId>alluxio-shaded-client</artifactId>
-                <version>2.1.0</version>
+                <version>${dep.alluxio.version}</version>
                 <exclusions>
                     <exclusion>
                         <groupId>org.slf4j</groupId>
@@ -1002,6 +1134,18 @@
             </dependency>
 
             <dependency>
+                <groupId>com.google.auth</groupId>
+                <artifactId>google-auth-library-oauth2-http</artifactId>
+                <version>0.12.0</version>
+                <exclusions>
+                    <exclusion>
+                        <groupId>commons-logging</groupId>
+                        <artifactId>commons-logging</artifactId>
+                    </exclusion>
+                </exclusions>
+            </dependency>
+
+            <dependency>
                 <groupId>com.google.cloud.bigdataoss</groupId>
                 <artifactId>util</artifactId>
                 <version>${dep.gcs.version}</version>
@@ -1058,6 +1202,176 @@
             </dependency>
 
             <dependency>
+                <groupId>org.apache.druid</groupId>
+                <artifactId>druid-processing</artifactId>
+                <version>${dep.druid.version}</version>
+                <exclusions>
+                    <exclusion>
+                        <groupId>commons-logging</groupId>
+                        <artifactId>commons-logging</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>com.fasterxml.jackson.core</groupId>
+                        <artifactId>jackson-annotations</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>com.fasterxml.jackson.core</groupId>
+                        <artifactId>jackson-core</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>com.fasterxml.jackson.core</groupId>
+                        <artifactId>jackson-databind</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>com.fasterxml.jackson.datatype</groupId>
+                        <artifactId>jackson-datatype-guava</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>com.fasterxml.jackson.datatype</groupId>
+                        <artifactId>jackson-datatype-joda</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>com.fasterxml.jackson.dataformat</groupId>
+                        <artifactId>jackson-dataformat-smile</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>it.unimi.dsi</groupId>
+                        <artifactId>fastutil</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>joda-time</groupId>
+                        <artifactId>joda-time</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.apache.commons</groupId>
+                        <artifactId>commons-lang3</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.apache.logging.log4j</groupId>
+                        <artifactId>log4j-slf4j-impl</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.apache.logging.log4j</groupId>
+                        <artifactId>log4j-1.2-api</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.checkerframework</groupId>
+                        <artifactId>checker-qual</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.glassfish</groupId>
+                        <artifactId>javax.el</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.objenesis</groupId>
+                        <artifactId>objenesis</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.ow2.asm</groupId>
+                        <artifactId>asm-commons</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.slf4j</groupId>
+                        <artifactId>slf4j-api</artifactId>
+                    </exclusion>
+                </exclusions>
+            </dependency>
+
+            <dependency>
+                <groupId>org.apache.druid</groupId>
+                <artifactId>druid-core</artifactId>
+                <version>${dep.druid.version}</version>
+                <exclusions>
+                    <exclusion>
+                        <groupId>commons-logging</groupId>
+                        <artifactId>commons-logging</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>com.fasterxml.jackson.core</groupId>
+                        <artifactId>jackson-annotations</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>com.fasterxml.jackson.core</groupId>
+                        <artifactId>jackson-core</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>com.fasterxml.jackson.core</groupId>
+                        <artifactId>jackson-databind</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>com.fasterxml.jackson.datatype</groupId>
+                        <artifactId>jackson-datatype-guava</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>com.fasterxml.jackson.datatype</groupId>
+                        <artifactId>jackson-datatype-joda</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>com.fasterxml.jackson.dataformat</groupId>
+                        <artifactId>jackson-dataformat-smile</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>it.unimi.dsi</groupId>
+                        <artifactId>fastutil</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>joda-time</groupId>
+                        <artifactId>joda-time</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.apache.commons</groupId>
+                        <artifactId>commons-lang3</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.apache.logging.log4j</groupId>
+                        <artifactId>log4j-slf4j-impl</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.apache.logging.log4j</groupId>
+                        <artifactId>log4j-1.2-api</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.checkerframework</groupId>
+                        <artifactId>checker-qual</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.glassfish</groupId>
+                        <artifactId>javax.el</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.objenesis</groupId>
+                        <artifactId>objenesis</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.ow2.asm</groupId>
+                        <artifactId>asm-commons</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.slf4j</groupId>
+                        <artifactId>slf4j-api</artifactId>
+                    </exclusion>
+                </exclusions>
+            </dependency>
+
+            <dependency>
+                <groupId>org.apache.httpcomponents</groupId>
+                <artifactId>httpclient</artifactId>
+                <version>4.5.5</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.apache.httpcomponents</groupId>
+                <artifactId>httpcore</artifactId>
+                <version>4.4.9</version>
+            </dependency>
+
+            <dependency>
+                <groupId>commons-codec</groupId>
+                <artifactId>commons-codec</artifactId>
+                <version>1.10</version>
+            </dependency>
+
+            <dependency>
                 <groupId>com.google.cloud.bigdataoss</groupId>
                 <artifactId>gcs-connector</artifactId>
                 <version>hadoop2-${dep.gcs.version}</version>
@@ -1102,7 +1416,7 @@
             <dependency>
                 <groupId>org.apache.kafka</groupId>
                 <artifactId>kafka_2.12</artifactId>
-                <version>1.1.1</version>
+                <version>${dep.kafka.version}</version>
                 <exclusions>
                     <exclusion>
                         <groupId>log4j</groupId>
@@ -1111,6 +1425,66 @@
                     <exclusion>
                         <groupId>org.slf4j</groupId>
                         <artifactId>slf4j-log4j12</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.slf4j</groupId>
+                        <artifactId>slf4j-api</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.xerial.snappy</groupId>
+                        <artifactId>snappy-java</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>com.fasterxml.jackson.core</groupId>
+                        <artifactId>jackson-annotations</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>com.fasterxml.jackson.core</groupId>
+                        <artifactId>jackson-core</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>com.fasterxml.jackson.core</groupId>
+                        <artifactId>jackson-databind</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>com.fasterxml.jackson.datatype</groupId>
+                        <artifactId>jackson-datatype-jdk8</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>com.thoughtworks.paranamer</groupId>
+                        <artifactId>paranamer</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.scala-lang</groupId>
+                        <artifactId>scala-library</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>com.101tec</groupId>
+                        <artifactId>zkclient</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.apache.zookeeper</groupId>
+                        <artifactId>zookeeper</artifactId>
+                    </exclusion>
+                </exclusions>
+            </dependency>
+
+            <dependency>
+                <groupId>org.apache.kafka</groupId>
+                <artifactId>kafka-clients</artifactId>
+                <version>${dep.kafka.version}</version>
+                <exclusions>
+                    <exclusion>
+                        <groupId>org.slf4j</groupId>
+                        <artifactId>slf4j-api</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.xerial.snappy</groupId>
+                        <artifactId>snappy-java</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>com.github.luben</groupId>
+                        <artifactId>zstd-jni</artifactId>
                     </exclusion>
                 </exclusions>
             </dependency>
@@ -1124,13 +1498,13 @@
             <dependency>
                 <groupId>com.github.luben</groupId>
                 <artifactId>zstd-jni</artifactId>
-                <version>1.3.5-4</version>
+                <version>1.4.5-4</version>
             </dependency>
 
             <dependency>
                 <groupId>org.apache.zookeeper</groupId>
                 <artifactId>zookeeper</artifactId>
-                <version>3.4.13</version>
+                <version>3.4.14</version>
                 <exclusions>
                     <exclusion>
                         <artifactId>jline</artifactId>
@@ -1254,7 +1628,7 @@
             <dependency>
                 <groupId>org.locationtech.jts</groupId>
                 <artifactId>jts-core</artifactId>
-                <version>1.16.1</version>
+                <version>1.17.0</version>
             </dependency>
 
             <dependency>
@@ -1278,6 +1652,12 @@
             </dependency>
 
             <dependency>
+                <groupId>com.google.myanmartools</groupId>
+                <artifactId>myanmar-tools</artifactId>
+                <version>1.1.3</version>
+            </dependency>
+
+            <dependency>
                 <groupId>com.facebook.presto.cassandra</groupId>
                 <artifactId>cassandra-server</artifactId>
                 <version>2.1.16-1</version>
@@ -1292,7 +1672,13 @@
             <dependency>
                 <groupId>com.facebook.presto.cassandra</groupId>
                 <artifactId>cassandra-driver</artifactId>
-                <version>3.1.4-1</version>
+                <version>3.6.0-1</version>
+                <exclusions>
+                    <exclusion>
+                        <groupId>io.netty</groupId>
+                        <artifactId>*</artifactId>
+                    </exclusion>
+                </exclusions>
             </dependency>
 
             <dependency>
@@ -1318,6 +1704,13 @@
                 <groupId>net.jodah</groupId>
                 <artifactId>failsafe</artifactId>
                 <version>2.0.1</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.facebook.presto.spark</groupId>
+                <artifactId>spark-core</artifactId>
+                <version>2.0.2-6</version>
+                <scope>provided</scope>
             </dependency>
         </dependencies>
     </dependencyManagement>
@@ -1398,6 +1791,7 @@
                             <requireUpperBoundDeps>
                                 <excludes combine.children="append">
                                     <!-- TODO: fix this in Airlift resolver -->
+                                    <exclude>org.alluxio:alluxio-shaded-client</exclude>
                                     <exclude>org.codehaus.plexus:plexus-utils</exclude>
                                     <exclude>com.google.guava:guava</exclude>
                                 </excludes>

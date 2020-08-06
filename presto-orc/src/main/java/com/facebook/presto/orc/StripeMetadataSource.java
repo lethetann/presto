@@ -21,12 +21,13 @@ import java.util.Map;
 
 public interface StripeMetadataSource
 {
-    Slice getStripeFooterSlice(OrcDataSource orcDataSource, StripeId stripeId, long footerOffset, int footerLength)
+    Slice getStripeFooterSlice(OrcDataSource orcDataSource, StripeId stripeId, long footerOffset, int footerLength, boolean cacheable)
             throws IOException;
 
     Map<StreamId, OrcDataSourceInput> getInputs(
             OrcDataSource orcDataSource,
             StripeId stripeId,
-            Map<StreamId, DiskRange> diskRanges)
+            Map<StreamId, DiskRange> diskRanges,
+            boolean cacheable)
             throws IOException;
 }

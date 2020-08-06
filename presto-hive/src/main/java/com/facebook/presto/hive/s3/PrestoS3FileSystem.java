@@ -21,6 +21,7 @@ import com.amazonaws.auth.AWSCredentials;
 import com.amazonaws.auth.AWSCredentialsProvider;
 import com.amazonaws.auth.AWSStaticCredentialsProvider;
 import com.amazonaws.auth.BasicAWSCredentials;
+import com.amazonaws.auth.DefaultAWSCredentialsProviderChain;
 import com.amazonaws.auth.InstanceProfileCredentialsProvider;
 import com.amazonaws.client.builder.AwsClientBuilder.EndpointConfiguration;
 import com.amazonaws.event.ProgressEvent;
@@ -49,6 +50,7 @@ import com.amazonaws.services.s3.transfer.TransferManager;
 import com.amazonaws.services.s3.transfer.TransferManagerBuilder;
 import com.amazonaws.services.s3.transfer.Upload;
 import com.facebook.airlift.log.Logger;
+import com.facebook.presto.hive.filesystem.ExtendedFileSystem;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.AbstractSequentialIterator;
 import com.google.common.collect.Iterators;
@@ -63,7 +65,6 @@ import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FSInputStream;
 import org.apache.hadoop.fs.FileStatus;
-import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.LocatedFileStatus;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.RemoteIterator;
@@ -148,7 +149,7 @@ import static org.apache.hadoop.fs.FSExceptionMessages.NEGATIVE_SEEK;
 import static org.apache.hadoop.fs.FSExceptionMessages.STREAM_IS_CLOSED;
 
 public class PrestoS3FileSystem
-        extends FileSystem
+        extends ExtendedFileSystem
 {
     static final String S3_DIRECTORY_OBJECT_CONTENT_TYPE = "application/x-directory";
 
@@ -754,7 +755,7 @@ public class PrestoS3FileSystem
             return getCustomAWSCredentialsProvider(uri, conf, providerClass);
         }
 
-        throw new RuntimeException("S3 credentials not configured");
+        return DefaultAWSCredentialsProviderChain.getInstance();
     }
 
     private static AWSCredentialsProvider getCustomAWSCredentialsProvider(URI uri, Configuration conf, String providerClass)

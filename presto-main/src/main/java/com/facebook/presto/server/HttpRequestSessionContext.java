@@ -111,7 +111,8 @@ public final class HttpRequestSessionContext
                 user,
                 Optional.ofNullable(servletRequest.getUserPrincipal()),
                 parseRoleHeaders(servletRequest),
-                parseExtraCredentials(servletRequest));
+                parseExtraCredentials(servletRequest),
+                ImmutableMap.of());
 
         source = servletRequest.getHeader(PRESTO_SOURCE);
         traceToken = Optional.ofNullable(trimEmptyToNull(servletRequest.getHeader(PRESTO_TRACE_TOKEN)));
@@ -199,7 +200,7 @@ public final class HttpRequestSessionContext
         for (String header : splitSessionHeader(servletRequest.getHeaders(headerName))) {
             List<String> nameValue = Splitter.on('=').trimResults().splitToList(header);
             assertRequest(nameValue.size() == 2, "Invalid %s header", headerName);
-            properties.put(nameValue.get(0), nameValue.get(1));
+            properties.put(nameValue.get(0), urlDecode(nameValue.get(1)));
         }
         return properties;
     }
@@ -418,6 +419,9 @@ public final class HttpRequestSessionContext
                         break;
                     case ResourceEstimates.PEAK_MEMORY:
                         builder.setPeakMemory(DataSize.valueOf(value));
+                        break;
+                    case ResourceEstimates.PEAK_TASK_MEMORY:
+                        builder.setPeakTaskMemory(DataSize.valueOf(value));
                         break;
                     default:
                         throw badRequest(format("Unsupported resource name %s", name));

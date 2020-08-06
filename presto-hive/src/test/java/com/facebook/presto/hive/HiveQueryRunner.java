@@ -17,6 +17,7 @@ import com.facebook.airlift.log.Logger;
 import com.facebook.airlift.log.Logging;
 import com.facebook.presto.Session;
 import com.facebook.presto.execution.QueryManagerConfig.ExchangeMaterializationStrategy;
+import com.facebook.presto.hive.TestHiveEventListenerPlugin.TestingHiveEventListenerPlugin;
 import com.facebook.presto.hive.authentication.NoHdfsAuthentication;
 import com.facebook.presto.hive.metastore.Database;
 import com.facebook.presto.hive.metastore.file.FileHiveMetastore;
@@ -137,6 +138,7 @@ public final class HiveQueryRunner
                         .build();
         try {
             queryRunner.installPlugin(new TpchPlugin());
+            queryRunner.installPlugin(new TestingHiveEventListenerPlugin());
             queryRunner.createCatalog("tpch", "tpch");
 
             File baseDir = queryRunner.getCoordinator().getBaseDataDir().resolve("hive_data").toFile();
@@ -242,6 +244,7 @@ public final class HiveQueryRunner
                         Optional.empty(),
                         role.map(selectedRole -> ImmutableMap.of(HIVE_CATALOG, selectedRole))
                                 .orElse(ImmutableMap.of()),
+                        ImmutableMap.of(),
                         ImmutableMap.of()))
                 .setCatalog(HIVE_CATALOG)
                 .setSchema(TPCH_SCHEMA)
@@ -256,6 +259,7 @@ public final class HiveQueryRunner
                         Optional.empty(),
                         role.map(selectedRole -> ImmutableMap.of(HIVE_BUCKETED_CATALOG, selectedRole))
                                 .orElse(ImmutableMap.of()),
+                        ImmutableMap.of(),
                         ImmutableMap.of()))
                 .setCatalog(HIVE_BUCKETED_CATALOG)
                 .setSchema(TPCH_BUCKETED_SCHEMA)
@@ -270,6 +274,7 @@ public final class HiveQueryRunner
                         Optional.empty(),
                         role.map(selectedRole -> ImmutableMap.of("hive", selectedRole))
                                 .orElse(ImmutableMap.of()),
+                        ImmutableMap.of(),
                         ImmutableMap.of()))
                 .setSystemProperty(PARTITIONING_PROVIDER_CATALOG, HIVE_CATALOG)
                 .setSystemProperty(EXCHANGE_MATERIALIZATION_STRATEGY, ExchangeMaterializationStrategy.ALL.toString())

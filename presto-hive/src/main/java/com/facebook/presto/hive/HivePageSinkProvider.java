@@ -15,6 +15,7 @@ package com.facebook.presto.hive;
 
 import com.facebook.airlift.event.client.EventClient;
 import com.facebook.airlift.json.JsonCodec;
+import com.facebook.presto.common.type.TypeManager;
 import com.facebook.presto.hive.metastore.ExtendedHiveMetastore;
 import com.facebook.presto.hive.metastore.HivePageSinkMetadataProvider;
 import com.facebook.presto.hive.metastore.SortingColumn;
@@ -28,8 +29,6 @@ import com.facebook.presto.spi.PageSinkProperties;
 import com.facebook.presto.spi.PageSorter;
 import com.facebook.presto.spi.connector.ConnectorPageSinkProvider;
 import com.facebook.presto.spi.connector.ConnectorTransactionHandle;
-import com.facebook.presto.spi.type.TypeManager;
-import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.util.concurrent.ListeningExecutorService;
 import io.airlift.units.DataSize;
@@ -114,24 +113,27 @@ public class HivePageSinkProvider
     public ConnectorPageSink createPageSink(ConnectorTransactionHandle transaction, ConnectorSession session, ConnectorOutputTableHandle tableHandle, PageSinkProperties pageSinkProperties)
     {
         HiveWritableTableHandle handle = (HiveOutputTableHandle) tableHandle;
-        return createPageSink(handle, true, session, pageSinkProperties.isPartitionCommitRequired());
+        return createPageSink(handle, true, session, pageSinkProperties.isCommitRequired());
     }
 
     @Override
     public ConnectorPageSink createPageSink(ConnectorTransactionHandle transaction, ConnectorSession session, ConnectorInsertTableHandle tableHandle, PageSinkProperties pageSinkProperties)
     {
         HiveInsertTableHandle handle = (HiveInsertTableHandle) tableHandle;
-        return createPageSink(handle, false, session, pageSinkProperties.isPartitionCommitRequired());
+        return createPageSink(handle, false, session, pageSinkProperties.isCommitRequired());
     }
 
-    private ConnectorPageSink createPageSink(HiveWritableTableHandle handle, boolean isCreateTable, ConnectorSession session, boolean partitionCommitRequired)
+    private ConnectorPageSink createPageSink(HiveWritableTableHandle handle, boolean isCreateTable, ConnectorSession session, boolean commitRequired)
     {
         OptionalInt bucketCount = OptionalInt.empty();
-        List<SortingColumn> sortedBy = ImmutableList.of();
+        List<SortingColumn> sortedBy;
 
         if (handle.getBucketProperty().isPresent()) {
             bucketCount = OptionalInt.of(handle.getBucketProperty().get().getBucketCount());
             sortedBy = handle.getBucketProperty().get().getSortedBy();
+        }
+        else {
+            sortedBy = handle.getPreferredOrderingColumns();
         }
 
         HiveWriterFactory writerFactory = new HiveWriterFactory(
@@ -163,7 +165,8 @@ public class HivePageSinkProvider
                 hiveSessionProperties,
                 hiveWriterStats,
                 orcFileWriterFactory,
-                partitionCommitRequired);
+                commitRequired,
+                handle.getEncryptionInformation());
 
         return new HivePageSink(
                 writerFactory,

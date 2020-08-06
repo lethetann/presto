@@ -30,6 +30,7 @@ import com.google.common.collect.ImmutableSet;
 import javax.annotation.concurrent.Immutable;
 
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -38,6 +39,7 @@ import java.util.Set;
 import java.util.function.Function;
 
 import static com.facebook.presto.spi.relation.SpecialFormExpression.Form.COALESCE;
+import static com.facebook.presto.sql.planner.optimizations.PropertyDerivations.arePartitionHandlesCompatibleForCoalesce;
 import static com.facebook.presto.sql.relational.OriginalExpressionUtils.castToExpression;
 import static com.facebook.presto.sql.relational.OriginalExpressionUtils.isExpression;
 import static com.google.common.base.MoreObjects.toStringHelper;
@@ -59,7 +61,7 @@ public final class Partitioning
         this.arguments = ImmutableList.copyOf(requireNonNull(arguments, "arguments is null"));
     }
 
-    public static <T extends RowExpression> Partitioning create(PartitioningHandle handle, List<T> columns)
+    public static <T extends RowExpression> Partitioning create(PartitioningHandle handle, Collection<T> columns)
     {
         return new Partitioning(handle, columns.stream()
                 .map(RowExpression.class::cast)
@@ -241,6 +243,26 @@ public final class Partitioning
         return true;
     }
 
+    public boolean isPartitionedOnExactly(Collection<VariableReferenceExpression> columns, Set<VariableReferenceExpression> knownConstants)
+    {
+        Set<VariableReferenceExpression> toCheck = new HashSet<>();
+        for (RowExpression argument : arguments) {
+            // partitioned on (k_1, k_2, ..., k_n) => partitioned on (k_1, k_2, ..., k_n, k_n+1, ...)
+            // can safely ignore all constant columns when comparing partition properties
+            if (argument instanceof ConstantExpression) {
+                continue;
+            }
+            if (!(argument instanceof VariableReferenceExpression)) {
+                return false;
+            }
+            if (knownConstants.contains(argument)) {
+                continue;
+            }
+            toCheck.add((VariableReferenceExpression) argument);
+        }
+        return ImmutableSet.copyOf(columns).equals(toCheck);
+    }
+
     public boolean isEffectivelySinglePartition(Set<VariableReferenceExpression> knownConstants)
     {
         return isPartitionedOn(ImmutableSet.of(), knownConstants);
@@ -296,9 +318,9 @@ public final class Partitioning
     }
 
     // Maps VariableReferenceExpression in both partitions to an COALESCE expression, keeps constant arguments unchanged.
-    public Optional<Partitioning> translateToCoalesce(Partitioning other)
+    public Optional<Partitioning> translateToCoalesce(Partitioning other, Metadata metadata, Session session)
     {
-        checkArgument(this.handle.equals(other.handle), "incompatible partitioning handles: %s != %s", this.handle, other.handle);
+        checkArgument(arePartitionHandlesCompatibleForCoalesce(this.handle, other.handle, metadata, session), "incompatible partitioning handles: cannot coalesce %s and %s", this.handle, other.handle);
         checkArgument(this.arguments.size() == other.arguments.size(), "incompatible number of partitioning arguments: %s != %s", this.arguments.size(), other.arguments.size());
         ImmutableList.Builder<RowExpression> arguments = ImmutableList.builder();
         for (int i = 0; i < this.arguments.size(); i++) {
@@ -320,7 +342,7 @@ public final class Partitioning
                 return Optional.empty();
             }
         }
-        return Optional.of(new Partitioning(this.handle, arguments.build()));
+        return Optional.of(new Partitioning(metadata.isRefinedPartitioningOver(session, other.handle, this.handle) ? this.handle : other.handle, arguments.build()));
     }
 
     public Optional<Partitioning> translateRowExpression(Map<VariableReferenceExpression, RowExpression> inputToOutputMappings, Map<VariableReferenceExpression, RowExpression> assignments, TypeProvider types)

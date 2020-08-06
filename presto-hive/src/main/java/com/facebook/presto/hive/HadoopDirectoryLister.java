@@ -13,10 +13,12 @@
  */
 package com.facebook.presto.hive;
 
+import com.facebook.presto.hive.filesystem.ExtendedFileSystem;
+import com.facebook.presto.hive.metastore.Table;
 import com.facebook.presto.hive.util.HiveFileIterator;
-import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.LocatedFileStatus;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.PathFilter;
 import org.apache.hadoop.fs.RemoteIterator;
 
 import java.io.IOException;
@@ -24,16 +26,26 @@ import java.util.Iterator;
 import java.util.Optional;
 
 import static com.facebook.presto.hive.HiveFileInfo.createHiveFileInfo;
-import static com.facebook.presto.hive.util.HiveFileIterator.NestedDirectoryPolicy;
 import static java.util.Objects.requireNonNull;
 
 public class HadoopDirectoryLister
         implements DirectoryLister
 {
     @Override
-    public Iterator<HiveFileInfo> list(FileSystem fileSystem, Path path, NamenodeStats namenodeStats, NestedDirectoryPolicy nestedDirectoryPolicy)
+    public Iterator<HiveFileInfo> list(
+            ExtendedFileSystem fileSystem,
+            Table table,
+            Path path,
+            NamenodeStats namenodeStats,
+            PathFilter pathFilter,
+            HiveDirectoryContext hiveDirectoryContext)
     {
-        return new HiveFileIterator(path, p -> new HadoopFileInfoIterator(fileSystem.listLocatedStatus(p)), namenodeStats, nestedDirectoryPolicy);
+        return new HiveFileIterator(
+                path,
+                p -> new HadoopFileInfoIterator(fileSystem.listLocatedStatus(p)),
+                namenodeStats,
+                hiveDirectoryContext.getNestedDirectoryPolicy(),
+                pathFilter);
     }
 
     public static class HadoopFileInfoIterator

@@ -13,7 +13,7 @@
  */
 package com.facebook.presto.pinot;
 
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.common.type.Type;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
@@ -27,15 +27,21 @@ public final class PinotColumn
 {
     private final String name;
     private final Type type;
+    private final boolean isNullable;
+    private final String comment;
 
     @JsonCreator
     public PinotColumn(
             @JsonProperty("name") String name,
-            @JsonProperty("type") Type type)
+            @JsonProperty("type") Type type,
+            @JsonProperty("isNullable") boolean isNullable,
+            @JsonProperty("comment") String comment)
     {
         checkArgument(!isNullOrEmpty(name), "name is null or is empty");
         this.name = name;
         this.type = requireNonNull(type, "type is null");
+        this.isNullable = isNullable;
+        this.comment = comment;
     }
 
     @JsonProperty
@@ -48,6 +54,18 @@ public final class PinotColumn
     public Type getType()
     {
         return type;
+    }
+
+    @JsonProperty
+    public boolean isNullable()
+    {
+        return isNullable;
+    }
+
+    @JsonProperty
+    public String getComment()
+    {
+        return comment;
     }
 
     @Override

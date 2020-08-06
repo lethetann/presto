@@ -13,10 +13,10 @@
  */
 package com.facebook.presto.orc.reader;
 
-import com.facebook.presto.memory.context.AggregatedMemoryContext;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.orc.OrcAggregatedMemoryContext;
 import com.facebook.presto.orc.OrcCorruptionException;
 import com.facebook.presto.orc.StreamDescriptor;
-import com.facebook.presto.spi.type.Type;
 import org.joda.time.DateTimeZone;
 
 public final class BatchStreamReaders
@@ -25,14 +25,14 @@ public final class BatchStreamReaders
     {
     }
 
-    public static BatchStreamReader createStreamReader(Type type, StreamDescriptor streamDescriptor, DateTimeZone hiveStorageTimeZone, AggregatedMemoryContext systemMemoryContext)
+    public static BatchStreamReader createStreamReader(Type type, StreamDescriptor streamDescriptor, DateTimeZone hiveStorageTimeZone, OrcAggregatedMemoryContext systemMemoryContext)
             throws OrcCorruptionException
     {
         switch (streamDescriptor.getOrcTypeKind()) {
             case BOOLEAN:
-                return new BooleanBatchStreamReader(type, streamDescriptor, systemMemoryContext.newLocalMemoryContext(BatchStreamReaders.class.getSimpleName()));
+                return new BooleanBatchStreamReader(type, streamDescriptor, systemMemoryContext.newOrcLocalMemoryContext(BatchStreamReaders.class.getSimpleName()));
             case BYTE:
-                return new ByteBatchStreamReader(type, streamDescriptor, systemMemoryContext.newLocalMemoryContext(BatchStreamReaders.class.getSimpleName()));
+                return new ByteBatchStreamReader(type, streamDescriptor, systemMemoryContext.newOrcLocalMemoryContext(BatchStreamReaders.class.getSimpleName()));
             case SHORT:
             case INT:
             case LONG:

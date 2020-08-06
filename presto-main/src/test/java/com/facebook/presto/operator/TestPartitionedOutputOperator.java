@@ -14,6 +14,10 @@
 package com.facebook.presto.operator;
 
 import com.facebook.presto.block.BlockEncodingManager;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.RunLengthEncodedBlock;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.execution.StateMachine;
 import com.facebook.presto.execution.buffer.OutputBuffers;
 import com.facebook.presto.execution.buffer.PagesSerdeFactory;
@@ -21,11 +25,8 @@ import com.facebook.presto.execution.buffer.PartitionedOutputBuffer;
 import com.facebook.presto.memory.context.SimpleLocalMemoryContext;
 import com.facebook.presto.operator.exchange.LocalPartitionGenerator;
 import com.facebook.presto.operator.repartition.PartitionedOutputOperator;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.RunLengthEncodedBlock;
 import com.facebook.presto.spi.plan.PlanNodeId;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.sql.planner.OutputPartitioning;
 import com.facebook.presto.testing.TestingTaskContext;
 import com.facebook.presto.type.TypeRegistry;
 import com.google.common.collect.ImmutableList;
@@ -45,12 +46,12 @@ import static com.facebook.presto.SessionTestUtils.TEST_SESSION;
 import static com.facebook.presto.block.BlockAssertions.createLongDictionaryBlock;
 import static com.facebook.presto.block.BlockAssertions.createLongSequenceBlock;
 import static com.facebook.presto.block.BlockAssertions.createRLEBlock;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
 import static com.facebook.presto.execution.buffer.BufferState.OPEN;
 import static com.facebook.presto.execution.buffer.BufferState.TERMINAL_BUFFER_STATES;
 import static com.facebook.presto.execution.buffer.OutputBuffers.BufferType.PARTITIONED;
 import static com.facebook.presto.execution.buffer.OutputBuffers.createInitialEmptyOutputBuffers;
 import static com.facebook.presto.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
 import static io.airlift.units.DataSize.Unit.BYTE;
 import static io.airlift.units.DataSize.Unit.GIGABYTE;
 import static io.airlift.units.DataSize.Unit.MEGABYTE;
@@ -165,6 +166,23 @@ public class TestPartitionedOutputOperator
     private static PartitionedOutputOperator createPartitionedOutputOperator(boolean shouldReplicate)
     {
         PartitionFunction partitionFunction = new LocalPartitionGenerator(new InterpretedHashGenerator(ImmutableList.of(BIGINT), new int[] {0}), PARTITION_COUNT);
+        OutputPartitioning outputPartitioning;
+        if (shouldReplicate) {
+            outputPartitioning = new OutputPartitioning(
+                    partitionFunction,
+                    ImmutableList.of(0),
+                    ImmutableList.of(Optional.empty()),
+                    true,
+                    OptionalInt.of(0));
+        }
+        else {
+            outputPartitioning = new OutputPartitioning(
+                    partitionFunction,
+                    ImmutableList.of(0),
+                    ImmutableList.of(Optional.empty(), Optional.empty()),
+                    false,
+                    OptionalInt.empty());
+        }
         PagesSerdeFactory serdeFactory = new PagesSerdeFactory(new BlockEncodingManager(new TypeRegistry()), false);
 
         DriverContext driverContext = TestingTaskContext.builder(EXECUTOR, SCHEDULER, TEST_SESSION)
@@ -189,29 +207,18 @@ public class TestPartitionedOutputOperator
 
         PartitionedOutputOperator.PartitionedOutputFactory operatorFactory;
         if (shouldReplicate) {
-            operatorFactory = new PartitionedOutputOperator.PartitionedOutputFactory(
-                    partitionFunction,
-                    ImmutableList.of(0),
-                    ImmutableList.of(Optional.empty()),
-                    true,
-                    OptionalInt.of(0),
-                    buffer,
-                    PARTITION_MAX_MEMORY);
+            operatorFactory = new PartitionedOutputOperator.PartitionedOutputFactory(buffer, PARTITION_MAX_MEMORY);
             return (PartitionedOutputOperator) operatorFactory
-                    .createOutputOperator(0, new PlanNodeId("plan-node-0"), REPLICATION_TYPES, Function.identity(), serdeFactory)
+                    .createOutputOperator(0, new PlanNodeId("plan-node-0"), REPLICATION_TYPES, Function.identity(), Optional.of(outputPartitioning), serdeFactory)
                     .createOperator(driverContext);
         }
         else {
             operatorFactory = new PartitionedOutputOperator.PartitionedOutputFactory(
-                    partitionFunction,
-                    ImmutableList.of(0),
-                    ImmutableList.of(Optional.empty(), Optional.empty()),
-                    false,
-                    OptionalInt.empty(),
+
                     buffer,
                     PARTITION_MAX_MEMORY);
             return (PartitionedOutputOperator) operatorFactory
-                    .createOutputOperator(0, new PlanNodeId("plan-node-0"), TYPES, Function.identity(), serdeFactory)
+                    .createOutputOperator(0, new PlanNodeId("plan-node-0"), TYPES, Function.identity(), Optional.of(outputPartitioning), serdeFactory)
                     .createOperator(driverContext);
         }
     }

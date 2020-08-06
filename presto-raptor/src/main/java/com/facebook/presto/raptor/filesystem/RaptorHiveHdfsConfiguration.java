@@ -13,12 +13,13 @@
  */
 package com.facebook.presto.raptor.filesystem;
 
-import com.facebook.presto.hadoop.HadoopFileSystemCache;
 import com.facebook.presto.hadoop.HadoopNative;
+import com.facebook.presto.hive.HdfsContext;
 import com.google.common.collect.ImmutableList;
 import com.google.common.net.HostAndPort;
 import io.airlift.units.Duration;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.HadoopExtendedFileSystemCache;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.mapreduce.lib.input.LineRecordReader;
 import org.apache.hadoop.net.DNSToSwitchMapping;
@@ -51,7 +52,7 @@ public class RaptorHiveHdfsConfiguration
 {
     static {
         HadoopNative.requireHadoopNative();
-        HadoopFileSystemCache.initialize();
+        HadoopExtendedFileSystemCache.initialize();
     }
 
     private static final Configuration INITIAL_CONFIGURATION = getInitialConfiguration();
@@ -79,7 +80,7 @@ public class RaptorHiveHdfsConfiguration
 
     // TODO: Support DynamicConfigurationProvider which consumes context and URI
     @Override
-    public Configuration getConfiguration(FileSystemContext context, URI uri)
+    public Configuration getConfiguration(HdfsContext context, URI uri)
     {
         return hadoopConfiguration.get();
     }

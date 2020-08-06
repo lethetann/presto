@@ -16,8 +16,8 @@ package com.facebook.presto.pinot;
 import com.facebook.airlift.json.JsonCodec;
 import com.facebook.airlift.json.JsonCodecFactory;
 import com.facebook.airlift.json.ObjectMapperProvider;
-import com.facebook.presto.spi.type.StandardTypes;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.common.type.StandardTypes;
+import com.facebook.presto.common.type.Type;
 import com.fasterxml.jackson.databind.DeserializationContext;
 import com.fasterxml.jackson.databind.JsonDeserializer;
 import com.fasterxml.jackson.databind.deser.std.FromStringDeserializer;
@@ -27,11 +27,11 @@ import java.util.List;
 import java.util.Map;
 
 import static com.facebook.airlift.json.JsonCodec.listJsonCodec;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static java.util.Locale.ENGLISH;
 import static java.util.Objects.requireNonNull;
 
@@ -43,6 +43,7 @@ public final class MetadataUtil
     public static final JsonCodec<PinotClusterInfoFetcher.GetTables> TABLES_JSON_CODEC;
     public static final JsonCodec<PinotClusterInfoFetcher.BrokersForTable> BROKERS_FOR_TABLE_JSON_CODEC;
     public static final JsonCodec<PinotClusterInfoFetcher.RoutingTables> ROUTING_TABLES_JSON_CODEC;
+    public static final JsonCodec<PinotClusterInfoFetcher.RoutingTablesV2> ROUTING_TABLES_V2_JSON_CODEC;
     public static final JsonCodec<PinotClusterInfoFetcher.TimeBoundary> TIME_BOUNDARY_JSON_CODEC;
 
     private MetadataUtil()
@@ -82,6 +83,7 @@ public final class MetadataUtil
         TABLES_JSON_CODEC = codecFactory.jsonCodec(PinotClusterInfoFetcher.GetTables.class);
         BROKERS_FOR_TABLE_JSON_CODEC = codecFactory.jsonCodec(PinotClusterInfoFetcher.BrokersForTable.class);
         ROUTING_TABLES_JSON_CODEC = codecFactory.jsonCodec(PinotClusterInfoFetcher.RoutingTables.class);
+        ROUTING_TABLES_V2_JSON_CODEC = codecFactory.jsonCodec(PinotClusterInfoFetcher.RoutingTablesV2.class);
         TIME_BOUNDARY_JSON_CODEC = codecFactory.jsonCodec(PinotClusterInfoFetcher.TimeBoundary.class);
     }
 }

@@ -49,11 +49,14 @@ public class CachingStripeMetadataSource
     }
 
     @Override
-    public Slice getStripeFooterSlice(OrcDataSource orcDataSource, StripeId stripeId, long footerOffset, int footerLength)
+    public Slice getStripeFooterSlice(OrcDataSource orcDataSource, StripeId stripeId, long footerOffset, int footerLength, boolean cacheable)
             throws IOException
     {
         try {
-            return footerSliceCache.get(stripeId, () -> delegate.getStripeFooterSlice(orcDataSource, stripeId, footerOffset, footerLength));
+            if (!cacheable) {
+                return delegate.getStripeFooterSlice(orcDataSource, stripeId, footerOffset, footerLength, cacheable);
+            }
+            return footerSliceCache.get(stripeId, () -> delegate.getStripeFooterSlice(orcDataSource, stripeId, footerOffset, footerLength, cacheable));
         }
         catch (ExecutionException | UncheckedExecutionException e) {
             throwIfInstanceOf(e.getCause(), IOException.class);
@@ -62,12 +65,12 @@ public class CachingStripeMetadataSource
     }
 
     @Override
-    public Map<StreamId, OrcDataSourceInput> getInputs(OrcDataSource orcDataSource, StripeId stripeId, Map<StreamId, DiskRange> diskRanges)
+    public Map<StreamId, OrcDataSourceInput> getInputs(OrcDataSource orcDataSource, StripeId stripeId, Map<StreamId, DiskRange> diskRanges, boolean cacheable)
             throws IOException
     {
-        //
-        // Note: this code does not use the Java 8 stream APIs to avoid any extra object allocation
-        //
+        if (!cacheable) {
+            return delegate.getInputs(orcDataSource, stripeId, diskRanges, cacheable);
+        }
 
         // Fetch existing stream slice from cache
         ImmutableMap.Builder<StreamId, OrcDataSourceInput> inputsBuilder = ImmutableMap.builder();
@@ -88,7 +91,7 @@ public class CachingStripeMetadataSource
         }
 
         // read ranges and update cache
-        Map<StreamId, OrcDataSourceInput> uncachedInputs = delegate.getInputs(orcDataSource, stripeId, uncachedDiskRangesBuilder.build());
+        Map<StreamId, OrcDataSourceInput> uncachedInputs = delegate.getInputs(orcDataSource, stripeId, uncachedDiskRangesBuilder.build(), cacheable);
         for (Entry<StreamId, OrcDataSourceInput> entry : uncachedInputs.entrySet()) {
             if (isCachedStream(entry.getKey().getStreamKind())) {
                 // We need to rewind the input after eagerly reading the slice.

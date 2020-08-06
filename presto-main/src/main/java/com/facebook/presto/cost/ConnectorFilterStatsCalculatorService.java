@@ -14,6 +14,7 @@
 
 package com.facebook.presto.cost;
 
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.plan.FilterStatsCalculatorService;
@@ -24,7 +25,6 @@ import com.facebook.presto.spi.statistics.ColumnStatistics.Builder;
 import com.facebook.presto.spi.statistics.DoubleRange;
 import com.facebook.presto.spi.statistics.Estimate;
 import com.facebook.presto.spi.statistics.TableStatistics;
-import com.facebook.presto.spi.type.Type;
 import com.google.common.collect.ImmutableBiMap;
 
 import java.util.Map;
@@ -58,7 +58,23 @@ public class ConnectorFilterStatsCalculatorService
             filteredStats = tableStats.mapOutputRowCount(sourceRowCount -> tableStats.getOutputRowCount() * UNKNOWN_FILTER_COEFFICIENT);
         }
 
-        return toTableStatistics(filteredStats, ImmutableBiMap.copyOf(columnNames).inverse());
+        TableStatistics filteredStatistics = toTableStatistics(filteredStats, ImmutableBiMap.copyOf(columnNames).inverse());
+        // Fill in the totalSize after filter, estimated proportional to the rowCount after versus before filter.
+        TableStatistics.Builder filteredStatsWithSize = TableStatistics.builder();
+        filteredStatsWithSize.setRowCount(filteredStatistics.getRowCount());
+        filteredStatistics.getColumnStatistics().forEach(filteredStatsWithSize::setColumnStatistics);
+        // If the rowCount before or after filter is zero, totalSize will also be zero
+        if (!tableStatistics.getRowCount().isUnknown() && tableStatistics.getRowCount().getValue() == 0
+                || !filteredStatistics.getRowCount().isUnknown() && filteredStatistics.getRowCount().getValue() == 0) {
+            filteredStatsWithSize.setTotalSize(Estimate.of(0));
+        }
+        else if (!tableStatistics.getTotalSize().isUnknown()
+                && !filteredStatistics.getRowCount().isUnknown()
+                && !tableStatistics.getRowCount().isUnknown()) {
+            double totalSizeAfterFilter = filteredStatistics.getRowCount().getValue() / tableStatistics.getRowCount().getValue() * tableStatistics.getTotalSize().getValue();
+            filteredStatsWithSize.setTotalSize(Estimate.of(totalSizeAfterFilter));
+        }
+        return filteredStatsWithSize.build();
     }
 
     private static PlanNodeStatsEstimate toPlanNodeStats(

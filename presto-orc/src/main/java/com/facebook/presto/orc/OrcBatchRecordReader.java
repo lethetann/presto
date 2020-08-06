@@ -13,7 +13,9 @@
  */
 package com.facebook.presto.orc;
 
-import com.facebook.presto.memory.context.AggregatedMemoryContext;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.orc.metadata.MetadataReader;
 import com.facebook.presto.orc.metadata.OrcType;
 import com.facebook.presto.orc.metadata.PostScript.HiveWriterVersion;
@@ -22,10 +24,8 @@ import com.facebook.presto.orc.metadata.statistics.ColumnStatistics;
 import com.facebook.presto.orc.metadata.statistics.StripeStatistics;
 import com.facebook.presto.orc.reader.BatchStreamReader;
 import com.facebook.presto.orc.reader.BatchStreamReaders;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.type.Type;
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.collect.ImmutableMap;
 import io.airlift.slice.Slice;
 import io.airlift.units.DataSize;
 import org.joda.time.DateTimeZone;
@@ -41,8 +41,6 @@ public class OrcBatchRecordReader
 {
     private static final int INSTANCE_SIZE = ClassLayout.parseClass(OrcBatchRecordReader.class).instanceSize();
 
-    private final Map<Integer, Type> includedColumns;
-
     public OrcBatchRecordReader(
             Map<Integer, Type> includedColumns,
             OrcPredicate predicate,
@@ -55,6 +53,9 @@ public class OrcBatchRecordReader
             long splitLength,
             List<OrcType> types,
             Optional<OrcDecompressor> decompressor,
+            Optional<EncryptionLibrary> encryptionLibrary,
+            Map<Integer, Integer> dwrfEncryptionGroupMap,
+            Map<Integer, Slice> intermediateKeyMetadata,
             int rowsInRowGroup,
             DateTimeZone hiveStorageTimeZone,
             HiveWriterVersion hiveWriterVersion,
@@ -63,20 +64,22 @@ public class OrcBatchRecordReader
             DataSize tinyStripeThreshold,
             DataSize maxBlockSize,
             Map<String, Slice> userMetadata,
-            AggregatedMemoryContext systemMemoryUsage,
+            OrcAggregatedMemoryContext systemMemoryUsage,
             Optional<OrcWriteValidation> writeValidation,
             int initialBatchSize,
-            StripeMetadataSource stripeMetadataSource)
+            StripeMetadataSource stripeMetadataSource,
+            boolean cacheable)
             throws OrcCorruptionException
 
     {
         super(includedColumns,
+                ImmutableMap.of(),
                 // The streamReadersSystemMemoryContext covers the StreamReader local buffer sizes, plus leaf node StreamReaders'
                 // instance sizes who use local buffers. SliceDirectStreamReader's instance size is not counted, because it
                 // doesn't have a local buffer. All non-leaf level StreamReaders' (e.g. MapStreamReader, LongStreamReader,
                 // ListStreamReader and StructStreamReader) instance sizes were not counted, because calling setBytes() in
                 // their constructors is confusing.
-                createStreamReaders(orcDataSource, types, hiveStorageTimeZone, includedColumns, systemMemoryUsage.newAggregatedMemoryContext()),
+                createStreamReaders(orcDataSource, types, hiveStorageTimeZone, includedColumns, systemMemoryUsage.newOrcAggregatedMemoryContext()),
                 predicate,
                 numberOfRows,
                 fileStripes,
@@ -87,6 +90,9 @@ public class OrcBatchRecordReader
                 splitLength,
                 types,
                 decompressor,
+                encryptionLibrary,
+                dwrfEncryptionGroupMap,
+                intermediateKeyMetadata,
                 rowsInRowGroup,
                 hiveStorageTimeZone,
                 hiveWriterVersion,
@@ -98,9 +104,8 @@ public class OrcBatchRecordReader
                 systemMemoryUsage,
                 writeValidation,
                 initialBatchSize,
-                stripeMetadataSource);
-
-        this.includedColumns = includedColumns;
+                stripeMetadataSource,
+                cacheable);
     }
 
     public int nextBatch()
@@ -158,7 +163,7 @@ public class OrcBatchRecordReader
             List<OrcType> types,
             DateTimeZone hiveStorageTimeZone,
             Map<Integer, Type> includedColumns,
-            AggregatedMemoryContext systemMemoryContext)
+            OrcAggregatedMemoryContext systemMemoryContext)
             throws OrcCorruptionException
     {
         List<StreamDescriptor> streamDescriptors = createStreamDescriptor("", "", 0, types, orcDataSource).getNestedStreams();

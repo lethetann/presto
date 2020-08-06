@@ -17,13 +17,16 @@ import com.facebook.airlift.bootstrap.Bootstrap;
 import com.facebook.airlift.bootstrap.LifeCycleManager;
 import com.facebook.airlift.event.client.EventModule;
 import com.facebook.airlift.json.JsonModule;
+import com.facebook.presto.cache.CachingModule;
+import com.facebook.presto.common.block.BlockEncodingSerde;
+import com.facebook.presto.common.type.TypeManager;
 import com.facebook.presto.hive.authentication.HiveAuthenticationModule;
 import com.facebook.presto.hive.gcs.HiveGcsModule;
 import com.facebook.presto.hive.metastore.ExtendedHiveMetastore;
 import com.facebook.presto.hive.metastore.HiveMetastoreModule;
 import com.facebook.presto.hive.s3.HiveS3Module;
 import com.facebook.presto.hive.security.HiveSecurityModule;
-import com.facebook.presto.hive.security.PartitionsAwareAccessControl;
+import com.facebook.presto.hive.security.SystemTableAwareAccessControl;
 import com.facebook.presto.spi.ConnectorHandleResolver;
 import com.facebook.presto.spi.NodeManager;
 import com.facebook.presto.spi.PageIndexerFactory;
@@ -47,7 +50,6 @@ import com.facebook.presto.spi.function.StandardFunctionResolution;
 import com.facebook.presto.spi.plan.FilterStatsCalculatorService;
 import com.facebook.presto.spi.procedure.Procedure;
 import com.facebook.presto.spi.relation.RowExpressionService;
-import com.facebook.presto.spi.type.TypeManager;
 import com.google.common.collect.ImmutableSet;
 import com.google.inject.Injector;
 import com.google.inject.Key;
@@ -110,6 +112,7 @@ public class HiveConnectorFactory
                     new HiveSecurityModule(),
                     new HiveAuthenticationModule(),
                     new HiveProcedureModule(),
+                    new CachingModule(),
                     binder -> {
                         MBeanServer platformMBeanServer = ManagementFactory.getPlatformMBeanServer();
                         binder.bind(MBeanServer.class).toInstance(new RebindSafeMBeanServer(platformMBeanServer));
@@ -122,6 +125,7 @@ public class HiveConnectorFactory
                         binder.bind(FunctionMetadataManager.class).toInstance(context.getFunctionMetadataManager());
                         binder.bind(RowExpressionService.class).toInstance(context.getRowExpressionService());
                         binder.bind(FilterStatsCalculatorService.class).toInstance(context.getFilterStatsCalculatorService());
+                        binder.bind(BlockEncodingSerde.class).toInstance(context.getBlockEncodingSerde());
                     });
 
             Injector injector = app
@@ -141,7 +145,7 @@ public class HiveConnectorFactory
             HiveSessionProperties hiveSessionProperties = injector.getInstance(HiveSessionProperties.class);
             HiveTableProperties hiveTableProperties = injector.getInstance(HiveTableProperties.class);
             HiveAnalyzeProperties hiveAnalyzeProperties = injector.getInstance(HiveAnalyzeProperties.class);
-            ConnectorAccessControl accessControl = new PartitionsAwareAccessControl(injector.getInstance(ConnectorAccessControl.class));
+            ConnectorAccessControl accessControl = new SystemTableAwareAccessControl(injector.getInstance(ConnectorAccessControl.class));
             Set<Procedure> procedures = injector.getInstance(Key.get(new TypeLiteral<Set<Procedure>>() {}));
             ConnectorPlanOptimizerProvider planOptimizerProvider = injector.getInstance(ConnectorPlanOptimizerProvider.class);
 

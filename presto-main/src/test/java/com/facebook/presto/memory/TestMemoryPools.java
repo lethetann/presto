@@ -15,6 +15,7 @@ package com.facebook.presto.memory;
 
 import com.facebook.airlift.stats.TestingGcMonitor;
 import com.facebook.presto.Session;
+import com.facebook.presto.common.Page;
 import com.facebook.presto.execution.buffer.TestingPagesSerdeFactory;
 import com.facebook.presto.memory.context.LocalMemoryContext;
 import com.facebook.presto.operator.Driver;
@@ -24,7 +25,6 @@ import com.facebook.presto.operator.OperatorContext;
 import com.facebook.presto.operator.OutputFactory;
 import com.facebook.presto.operator.TableScanOperator;
 import com.facebook.presto.operator.TaskContext;
-import com.facebook.presto.spi.Page;
 import com.facebook.presto.spi.QueryId;
 import com.facebook.presto.spi.memory.MemoryPoolId;
 import com.facebook.presto.spi.plan.PlanNodeId;
@@ -44,6 +44,7 @@ import org.testng.annotations.Test;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
@@ -95,6 +96,7 @@ public class TestMemoryPools
         QueryContext queryContext = new QueryContext(new QueryId("query"),
                 TEN_MEGABYTES,
                 new DataSize(20, MEGABYTE),
+                TEN_MEGABYTES,
                 userPool,
                 new TestingGcMonitor(),
                 localQueryRunner.getExecutor(),
@@ -125,7 +127,8 @@ public class TestMemoryPools
                     TableScanOperator.class.getSimpleName());
 
             OutputFactory outputFactory = new PageConsumerOutputFactory(types -> (page -> {}));
-            Operator outputOperator = outputFactory.createOutputOperator(2, new PlanNodeId("output"), ImmutableList.of(), Function.identity(), new TestingPagesSerdeFactory()).createOperator(driverContext);
+            Operator outputOperator = outputFactory.createOutputOperator(2, new PlanNodeId("output"), ImmutableList.of(), Function.identity(), Optional.empty(), new TestingPagesSerdeFactory())
+                    .createOperator(driverContext);
             RevocableMemoryOperator revocableMemoryOperator = new RevocableMemoryOperator(revokableOperatorContext, reservedPerPage, numberOfPages);
             createOperator.set(revocableMemoryOperator);
 

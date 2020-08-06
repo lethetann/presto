@@ -37,11 +37,13 @@ public class TestExchangeClientConfig
                 .setConcurrentRequestMultiplier(3)
                 .setMinErrorDuration(new Duration(5, TimeUnit.MINUTES))
                 .setMaxErrorDuration(new Duration(5, TimeUnit.MINUTES))
+                .setAsyncPageTransportTimeout(new Duration(60, TimeUnit.SECONDS))
                 .setMaxResponseSize(new HttpClientConfig().getMaxContentLength())
                 .setPageBufferClientMaxCallbackThreads(25)
                 .setClientThreads(25)
                 .setAcknowledgePages(true)
-                .setResponseSizeExponentialMovingAverageDecayingAlpha(0.1));
+                .setResponseSizeExponentialMovingAverageDecayingAlpha(0.1)
+                .setAsyncPageTransportEnabled(true));
     }
 
     @Test
@@ -52,11 +54,13 @@ public class TestExchangeClientConfig
                 .put("exchange.concurrent-request-multiplier", "13")
                 .put("exchange.min-error-duration", "13s")
                 .put("exchange.max-error-duration", "33s")
+                .put("exchange.async-page-transport-timeout", "30s")
                 .put("exchange.max-response-size", "1MB")
                 .put("exchange.client-threads", "2")
                 .put("exchange.page-buffer-client.max-callback-threads", "16")
                 .put("exchange.acknowledge-pages", "false")
                 .put("exchange.response-size-exponential-moving-average-decaying-alpha", "0.42")
+                .put("exchange.async-page-transport-enabled", "false")
                 .build();
 
         ExchangeClientConfig expected = new ExchangeClientConfig()
@@ -64,11 +68,13 @@ public class TestExchangeClientConfig
                 .setConcurrentRequestMultiplier(13)
                 .setMinErrorDuration(new Duration(33, TimeUnit.SECONDS))
                 .setMaxErrorDuration(new Duration(33, TimeUnit.SECONDS))
+                .setAsyncPageTransportTimeout(new Duration(30, TimeUnit.SECONDS))
                 .setMaxResponseSize(new DataSize(1, Unit.MEGABYTE))
                 .setClientThreads(2)
                 .setPageBufferClientMaxCallbackThreads(16)
                 .setAcknowledgePages(false)
-                .setResponseSizeExponentialMovingAverageDecayingAlpha(0.42);
+                .setResponseSizeExponentialMovingAverageDecayingAlpha(0.42)
+                .setAsyncPageTransportEnabled(false);
 
         assertFullMapping(properties, expected);
     }

@@ -37,7 +37,7 @@ import static org.testng.Assert.assertEquals;
 
 public class TestQueryStats
 {
-    public static final List<OperatorStats> operatorSummaries = ImmutableList.of(
+    private static final List<OperatorStats> OPERATOR_SUMMARIES = ImmutableList.of(
             new OperatorStats(
                     10,
                     101,
@@ -49,6 +49,7 @@ public class TestQueryStats
                     15L,
                     new Duration(16, NANOSECONDS),
                     new Duration(17, NANOSECONDS),
+                    new DataSize(123, BYTE),
                     succinctBytes(18L),
                     200,
                     succinctBytes(19L),
@@ -57,6 +58,7 @@ public class TestQueryStats
                     112L,
                     new Duration(113, NANOSECONDS),
                     new Duration(114, NANOSECONDS),
+                    new DataSize(234, BYTE),
                     succinctBytes(116L),
                     117L,
                     succinctBytes(118L),
@@ -64,6 +66,7 @@ public class TestQueryStats
                     120L,
                     new Duration(121, NANOSECONDS),
                     new Duration(122, NANOSECONDS),
+                    new DataSize(345, BYTE),
                     succinctBytes(124L),
                     succinctBytes(125L),
                     succinctBytes(126L),
@@ -84,6 +87,7 @@ public class TestQueryStats
                     25L,
                     new Duration(26, NANOSECONDS),
                     new Duration(27, NANOSECONDS),
+                    new DataSize(1230, BYTE),
                     succinctBytes(28L),
                     250,
                     succinctBytes(29L),
@@ -92,6 +96,7 @@ public class TestQueryStats
                     212L,
                     new Duration(213, NANOSECONDS),
                     new Duration(214, NANOSECONDS),
+                    new DataSize(2340, BYTE),
                     succinctBytes(216L),
                     217L,
                     succinctBytes(218L),
@@ -99,6 +104,7 @@ public class TestQueryStats
                     220L,
                     new Duration(221, NANOSECONDS),
                     new Duration(222, NANOSECONDS),
+                    new DataSize(3450, BYTE),
                     succinctBytes(224L),
                     succinctBytes(225L),
                     succinctBytes(226L),
@@ -119,6 +125,7 @@ public class TestQueryStats
                     35L,
                     new Duration(36, NANOSECONDS),
                     new Duration(37, NANOSECONDS),
+                    new DataSize(12300, BYTE),
                     succinctBytes(38L),
                     350,
                     succinctBytes(39L),
@@ -127,6 +134,7 @@ public class TestQueryStats
                     312L,
                     new Duration(313, NANOSECONDS),
                     new Duration(314, NANOSECONDS),
+                    new DataSize(23400, BYTE),
                     succinctBytes(316L),
                     317L,
                     succinctBytes(318L),
@@ -134,6 +142,7 @@ public class TestQueryStats
                     320L,
                     new Duration(321, NANOSECONDS),
                     new Duration(322, NANOSECONDS),
+                    new DataSize(34500, BYTE),
                     succinctBytes(324L),
                     succinctBytes(325L),
                     succinctBytes(326L),
@@ -144,7 +153,7 @@ public class TestQueryStats
                     Optional.empty(),
                     null));
 
-    public static final QueryStats EXPECTED = new QueryStats(
+    private static final QueryStats EXPECTED = new QueryStats(
             new DateTime(1),
             new DateTime(2),
             new DateTime(3),
@@ -152,6 +161,7 @@ public class TestQueryStats
             new Duration(6, NANOSECONDS),
             new Duration(5, NANOSECONDS),
             new Duration(31, NANOSECONDS),
+            new Duration(32, NANOSECONDS),
             new Duration(41, NANOSECONDS),
             new Duration(7, NANOSECONDS),
 
@@ -180,9 +190,12 @@ public class TestQueryStats
             true,
             new Duration(20, NANOSECONDS),
             new Duration(21, NANOSECONDS),
+            new Duration(0, NANOSECONDS),
             new Duration(23, NANOSECONDS),
             false,
             ImmutableSet.of(),
+
+            new DataSize(123, BYTE),
 
             new DataSize(24, BYTE),
             25,
@@ -209,7 +222,7 @@ public class TestQueryStats
                     106,
                     107)),
 
-            operatorSummaries);
+            OPERATOR_SUMMARIES);
 
     @Test
     public void testJson()
@@ -222,7 +235,7 @@ public class TestQueryStats
         assertExpectedQueryStats(actual);
     }
 
-    public static void assertExpectedQueryStats(QueryStats actual)
+    private static void assertExpectedQueryStats(QueryStats actual)
     {
         assertEquals(actual.getCreateTime(), new DateTime(1, UTC));
         assertEquals(actual.getExecutionStartTime(), new DateTime(2, UTC));
@@ -231,6 +244,8 @@ public class TestQueryStats
 
         assertEquals(actual.getElapsedTime(), new Duration(6, NANOSECONDS));
         assertEquals(actual.getQueuedTime(), new Duration(5, NANOSECONDS));
+        assertEquals(actual.getResourceWaitingTime(), new Duration(31, NANOSECONDS));
+        assertEquals(actual.getDispatchingTime(), new Duration(32, NANOSECONDS));
         assertEquals(actual.getExecutionTime(), new Duration(41, NANOSECONDS));
         assertEquals(actual.getAnalysisTime(), new Duration(7, NANOSECONDS));
 
@@ -260,6 +275,8 @@ public class TestQueryStats
         assertEquals(actual.getTotalScheduledTime(), new Duration(20, NANOSECONDS));
         assertEquals(actual.getTotalCpuTime(), new Duration(21, NANOSECONDS));
         assertEquals(actual.getTotalBlockedTime(), new Duration(23, NANOSECONDS));
+
+        assertEquals(actual.getTotalAllocation(), new DataSize(123, BYTE));
 
         assertEquals(actual.getRawInputDataSize(), new DataSize(24, BYTE));
         assertEquals(actual.getRawInputPositions(), 25);

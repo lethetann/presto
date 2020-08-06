@@ -13,10 +13,11 @@
  */
 package com.facebook.presto.raptor.filesystem;
 
+import com.facebook.presto.hive.HdfsContext;
+import com.facebook.presto.orc.DataSink;
 import com.facebook.presto.orc.FileOrcDataSource;
-import com.facebook.presto.orc.OrcDataSink;
 import com.facebook.presto.orc.OrcDataSource;
-import com.facebook.presto.orc.OutputStreamOrcDataSink;
+import com.facebook.presto.orc.OutputStreamDataSink;
 import com.facebook.presto.raptor.storage.OrcDataEnvironment;
 import com.facebook.presto.raptor.storage.ReaderAttributes;
 import com.facebook.presto.spi.PrestoException;
@@ -51,7 +52,7 @@ public class LocalOrcDataEnvironment
     }
 
     @Override
-    public FileSystem getFileSystem(FileSystemContext ignore)
+    public FileSystem getFileSystem(HdfsContext ignore)
     {
         return localFileSystem;
     }
@@ -74,10 +75,10 @@ public class LocalOrcDataEnvironment
     }
 
     @Override
-    public OrcDataSink createOrcDataSink(FileSystem fileSystem, Path path)
+    public DataSink createOrcDataSink(FileSystem fileSystem, Path path)
             throws IOException
     {
-        return new OutputStreamOrcDataSink(new FileOutputStream(localFileSystem.pathToFile(path)));
+        return new OutputStreamDataSink(new FileOutputStream(localFileSystem.pathToFile(path)));
     }
 
     public static Optional<RawLocalFileSystem> tryGetLocalFileSystem(OrcDataEnvironment environment)

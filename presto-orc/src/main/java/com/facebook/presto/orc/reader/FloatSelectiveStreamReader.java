@@ -13,7 +13,12 @@
  */
 package com.facebook.presto.orc.reader;
 
-import com.facebook.presto.memory.context.LocalMemoryContext;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockLease;
+import com.facebook.presto.common.block.ClosingBlockLease;
+import com.facebook.presto.common.block.IntArrayBlock;
+import com.facebook.presto.common.block.RunLengthEncodedBlock;
+import com.facebook.presto.orc.OrcLocalMemoryContext;
 import com.facebook.presto.orc.StreamDescriptor;
 import com.facebook.presto.orc.TupleDomainFilter;
 import com.facebook.presto.orc.metadata.ColumnEncoding;
@@ -21,23 +26,18 @@ import com.facebook.presto.orc.stream.BooleanInputStream;
 import com.facebook.presto.orc.stream.FloatInputStream;
 import com.facebook.presto.orc.stream.InputStreamSource;
 import com.facebook.presto.orc.stream.InputStreamSources;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockLease;
-import com.facebook.presto.spi.block.ClosingBlockLease;
-import com.facebook.presto.spi.block.IntArrayBlock;
-import com.facebook.presto.spi.block.RunLengthEncodedBlock;
 import org.openjdk.jol.info.ClassLayout;
 
 import java.io.IOException;
-import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
-import static com.facebook.presto.array.Arrays.ensureCapacity;
+import static com.facebook.presto.common.type.RealType.REAL;
+import static com.facebook.presto.orc.array.Arrays.ensureCapacity;
 import static com.facebook.presto.orc.metadata.Stream.StreamKind.DATA;
 import static com.facebook.presto.orc.metadata.Stream.StreamKind.PRESENT;
 import static com.facebook.presto.orc.reader.SelectiveStreamReaders.initializeOutputPositions;
 import static com.facebook.presto.orc.stream.MissingInputStreamSource.missingStreamSource;
-import static com.facebook.presto.spi.type.RealType.REAL;
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
@@ -55,7 +55,7 @@ public class FloatSelectiveStreamReader
     private final TupleDomainFilter filter;
     private final boolean nullsAllowed;
     private final boolean outputRequired;
-    private final LocalMemoryContext systemMemoryContext;
+    private final OrcLocalMemoryContext systemMemoryContext;
     private final boolean nonDeterministicFilter;
 
     private InputStreamSource<BooleanInputStream> presentStreamSource = missingStreamSource(BooleanInputStream.class);
@@ -76,7 +76,7 @@ public class FloatSelectiveStreamReader
             StreamDescriptor streamDescriptor,
             Optional<TupleDomainFilter> filter,
             boolean outputRequired,
-            LocalMemoryContext systemMemoryContext)
+            OrcLocalMemoryContext systemMemoryContext)
     {
         requireNonNull(filter, "filter is null");
         checkArgument(filter.isPresent() || outputRequired, "filter must be present if outputRequired is false");
@@ -89,7 +89,7 @@ public class FloatSelectiveStreamReader
     }
 
     @Override
-    public void startStripe(InputStreamSources dictionaryStreamSources, List<ColumnEncoding> encoding)
+    public void startStripe(InputStreamSources dictionaryStreamSources, Map<Integer, ColumnEncoding> encoding)
     {
         presentStreamSource = missingStreamSource(BooleanInputStream.class);
         dataStreamSource = missingStreamSource(FloatInputStream.class);
@@ -250,6 +250,32 @@ public class FloatSelectiveStreamReader
     private int readNoFilter(int[] positions, int positionCount)
             throws IOException
     {
+        if (positions[positionCount - 1] == positionCount - 1) {
+            // no skipping
+            if (presentStream != null) {
+                // some nulls
+                int nullCount = presentStream.getUnsetBits(positionCount, nulls);
+                if (nullCount == positionCount) {
+                    allNulls = true;
+                }
+                else {
+                    for (int i = 0; i < positionCount; i++) {
+                        if (!nulls[i]) {
+                            values[i] = floatToRawIntBits(dataStream.next());
+                        }
+                    }
+                }
+            }
+            else {
+                // no nulls
+                for (int i = 0; i < positionCount; i++) {
+                    values[i] = floatToRawIntBits(dataStream.next());
+                }
+            }
+            outputPositionCount = positionCount;
+            return positions[positionCount - 1] + 1;
+        }
+
         int streamPosition = 0;
         for (int i = 0; i < positionCount; i++) {
             int position = positions[i];
@@ -415,6 +441,15 @@ public class FloatSelectiveStreamReader
     @Override
     public void close()
     {
+        values = null;
+        outputPositions = null;
+        nulls = null;
+
+        presentStream = null;
+        presentStreamSource = null;
+        dataStream = null;
+        dataStreamSource = null;
+
         systemMemoryContext.close();
     }
 

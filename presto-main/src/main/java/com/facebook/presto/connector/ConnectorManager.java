@@ -15,6 +15,8 @@ package com.facebook.presto.connector;
 
 import com.facebook.airlift.log.Logger;
 import com.facebook.airlift.node.NodeInfo;
+import com.facebook.presto.common.block.BlockEncodingSerde;
+import com.facebook.presto.common.type.TypeManager;
 import com.facebook.presto.connector.informationSchema.InformationSchemaConnector;
 import com.facebook.presto.connector.system.DelegatingSystemTablesProvider;
 import com.facebook.presto.connector.system.MetadataBasedSystemTablesProvider;
@@ -51,7 +53,6 @@ import com.facebook.presto.spi.relation.DeterminismEvaluator;
 import com.facebook.presto.spi.relation.DomainTranslator;
 import com.facebook.presto.spi.relation.PredicateCompiler;
 import com.facebook.presto.spi.session.PropertyMetadata;
-import com.facebook.presto.spi.type.TypeManager;
 import com.facebook.presto.split.PageSinkManager;
 import com.facebook.presto.split.PageSourceManager;
 import com.facebook.presto.split.RecordPageSourceProvider;
@@ -112,6 +113,7 @@ public class ConnectorManager
     private final PredicateCompiler predicateCompiler;
     private final DeterminismEvaluator determinismEvaluator;
     private final FilterStatsCalculator filterStatsCalculator;
+    private final BlockEncodingSerde blockEncodingSerde;
 
     @GuardedBy("this")
     private final ConcurrentMap<String, ConnectorFactory> connectorFactories = new ConcurrentHashMap<>();
@@ -142,7 +144,8 @@ public class ConnectorManager
             DomainTranslator domainTranslator,
             PredicateCompiler predicateCompiler,
             DeterminismEvaluator determinismEvaluator,
-            FilterStatsCalculator filterStatsCalculator)
+            FilterStatsCalculator filterStatsCalculator,
+            BlockEncodingSerde blockEncodingSerde)
     {
         this.metadataManager = requireNonNull(metadataManager, "metadataManager is null");
         this.catalogManager = requireNonNull(catalogManager, "catalogManager is null");
@@ -164,6 +167,7 @@ public class ConnectorManager
         this.predicateCompiler = requireNonNull(predicateCompiler, "predicateCompiler is null");
         this.determinismEvaluator = requireNonNull(determinismEvaluator, "determinismEvaluator is null");
         this.filterStatsCalculator = requireNonNull(filterStatsCalculator, "filterStatsCalculator is null");
+        this.blockEncodingSerde = requireNonNull(blockEncodingSerde, "blockEncodingSerde is null");
     }
 
     @PreDestroy
@@ -330,6 +334,7 @@ public class ConnectorManager
         metadataManager.getSchemaPropertyManager().removeProperties(connectorId);
         metadataManager.getAnalyzePropertyManager().removeProperties(connectorId);
         metadataManager.getSessionPropertyManager().removeConnectorSessionProperties(connectorId);
+        connectorPlanOptimizerManager.removePlanOptimizerProvider(connectorId);
 
         MaterializedConnector materializedConnector = connectors.remove(connectorId);
         if (materializedConnector != null) {
@@ -358,7 +363,8 @@ public class ConnectorManager
                         predicateCompiler,
                         determinismEvaluator,
                         new RowExpressionFormatter(metadataManager.getFunctionManager())),
-                new ConnectorFilterStatsCalculatorService(filterStatsCalculator));
+                new ConnectorFilterStatsCalculatorService(filterStatsCalculator),
+                blockEncodingSerde);
 
         try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(factory.getClass().getClassLoader())) {
             return factory.create(connectorId.getCatalogName(), properties, context);

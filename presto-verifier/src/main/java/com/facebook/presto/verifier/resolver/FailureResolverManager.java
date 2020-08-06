@@ -13,28 +13,47 @@
  */
 package com.facebook.presto.verifier.resolver;
 
-import com.facebook.presto.jdbc.QueryStats;
+import com.facebook.presto.verifier.framework.MatchResult;
 import com.facebook.presto.verifier.framework.QueryBundle;
 import com.facebook.presto.verifier.framework.QueryException;
+import com.facebook.presto.verifier.prestoaction.QueryActionStats;
 
-import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 import static java.util.Objects.requireNonNull;
 
 public class FailureResolverManager
 {
-    private final List<FailureResolver> failureResolvers;
+    private final Set<FailureResolver> failureResolvers;
 
-    public FailureResolverManager(List<FailureResolver> failureResolvers)
+    public FailureResolverManager(Set<FailureResolver> failureResolvers)
     {
         this.failureResolvers = requireNonNull(failureResolvers, "failureResolvers is null");
     }
 
-    public Optional<String> resolve(QueryStats controlQueryStats, QueryException queryException, Optional<QueryBundle> test)
+    public Optional<String> resolveException(QueryActionStats controlStats, Throwable throwable, Optional<QueryBundle> test)
+    {
+        if (!(throwable instanceof QueryException)) {
+            return Optional.of("Verifier Error");
+        }
+
+        for (FailureResolver failureResolver : failureResolvers) {
+            if (!controlStats.getQueryStats().isPresent()) {
+                continue;
+            }
+            Optional<String> resolveMessage = failureResolver.resolveQueryFailure(controlStats.getQueryStats().get(), (QueryException) throwable, test);
+            if (resolveMessage.isPresent()) {
+                return resolveMessage;
+            }
+        }
+        return Optional.empty();
+    }
+
+    public Optional<String> resolveResultMismatch(MatchResult matchResult, QueryBundle control)
     {
         for (FailureResolver failureResolver : failureResolvers) {
-            Optional<String> resolveMessage = failureResolver.resolve(controlQueryStats, queryException, test);
+            Optional<String> resolveMessage = failureResolver.resolveResultMismatch(matchResult, control);
             if (resolveMessage.isPresent()) {
                 return resolveMessage;
             }

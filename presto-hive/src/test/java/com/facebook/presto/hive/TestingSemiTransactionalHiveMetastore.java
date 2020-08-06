@@ -14,7 +14,10 @@
 
 package com.facebook.presto.hive;
 
+import com.facebook.presto.common.predicate.Domain;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.hive.authentication.NoHdfsAuthentication;
+import com.facebook.presto.hive.metastore.Column;
 import com.facebook.presto.hive.metastore.Database;
 import com.facebook.presto.hive.metastore.ExtendedHiveMetastore;
 import com.facebook.presto.hive.metastore.HivePageSinkMetadata;
@@ -34,7 +37,6 @@ import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.security.PrestoPrincipal;
 import com.facebook.presto.spi.security.RoleGrant;
 import com.facebook.presto.spi.statistics.ColumnStatisticType;
-import com.facebook.presto.spi.type.Type;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.util.concurrent.ListeningExecutorService;
 import org.apache.hadoop.fs.Path;
@@ -231,7 +233,7 @@ public class TestingSemiTransactionalHiveMetastore
     }
 
     @Override
-    public synchronized Optional<List<String>> getPartitionNamesByParts(String databaseName, String tableName, List<String> parts)
+    public synchronized Optional<List<String>> getPartitionNamesByFilter(String databaseName, String tableName, Map<Column, Domain> effectivePredicate)
     {
         return Optional.ofNullable(partitionsMap.get(new HiveTableName(databaseName, tableName)));
     }

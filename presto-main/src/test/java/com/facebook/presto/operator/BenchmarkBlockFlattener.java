@@ -13,12 +13,12 @@
  */
 package com.facebook.presto.operator;
 
-import com.facebook.presto.spi.block.ArrayAllocator;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockFlattener;
-import com.facebook.presto.spi.block.BlockLease;
-import com.facebook.presto.spi.block.DictionaryBlock;
-import com.facebook.presto.spi.block.IntArrayBlock;
+import com.facebook.presto.common.block.ArrayAllocator;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockFlattener;
+import com.facebook.presto.common.block.BlockLease;
+import com.facebook.presto.common.block.DictionaryBlock;
+import com.facebook.presto.common.block.IntArrayBlock;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
 import org.openjdk.jmh.annotations.Fork;
@@ -67,6 +67,18 @@ public class BenchmarkBlockFlattener
 
         @Override
         public void returnArray(int[] array)
+        {
+            // no op
+        }
+
+        @Override
+        public byte[] borrowByteArray(int positionCount)
+        {
+            return new byte[positionCount];
+        }
+
+        @Override
+        public void returnArray(byte[] array)
         {
             // no op
         }

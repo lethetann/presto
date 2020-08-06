@@ -15,13 +15,15 @@ package com.facebook.presto.execution;
 
 import com.facebook.airlift.stats.TestingGcMonitor;
 import com.facebook.presto.block.BlockEncodingManager;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.type.TestingTypeManager;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.execution.buffer.BufferResult;
 import com.facebook.presto.execution.buffer.BufferState;
 import com.facebook.presto.execution.buffer.OutputBuffer;
 import com.facebook.presto.execution.buffer.OutputBuffers.OutputBufferId;
 import com.facebook.presto.execution.buffer.PagesSerdeFactory;
 import com.facebook.presto.execution.buffer.PartitionedOutputBuffer;
-import com.facebook.presto.execution.buffer.SerializedPage;
 import com.facebook.presto.execution.executor.TaskExecutor;
 import com.facebook.presto.memory.MemoryPool;
 import com.facebook.presto.memory.QueryContext;
@@ -42,14 +44,13 @@ import com.facebook.presto.operator.ValuesOperator.ValuesOperatorFactory;
 import com.facebook.presto.spi.ConnectorId;
 import com.facebook.presto.spi.ConnectorSplit;
 import com.facebook.presto.spi.HostAddress;
-import com.facebook.presto.spi.Page;
 import com.facebook.presto.spi.QueryId;
 import com.facebook.presto.spi.UpdatablePageSource;
 import com.facebook.presto.spi.connector.ConnectorTransactionHandle;
 import com.facebook.presto.spi.memory.MemoryPoolId;
+import com.facebook.presto.spi.page.SerializedPage;
 import com.facebook.presto.spi.plan.PlanNodeId;
-import com.facebook.presto.spi.type.TestingTypeManager;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.spi.schedule.NodeSelectionStrategy;
 import com.facebook.presto.spiller.SpillSpaceTracker;
 import com.facebook.presto.sql.planner.LocalExecutionPlanner.LocalExecutionPlan;
 import com.facebook.presto.testing.TestingTransactionHandle;
@@ -87,6 +88,8 @@ import static com.facebook.airlift.concurrent.Threads.threadsNamed;
 import static com.facebook.presto.SessionTestUtils.TEST_SESSION;
 import static com.facebook.presto.block.BlockAssertions.createStringSequenceBlock;
 import static com.facebook.presto.block.BlockAssertions.createStringsBlock;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
+import static com.facebook.presto.execution.TaskManagerConfig.TaskPriorityTracking.TASK_FAIR;
 import static com.facebook.presto.execution.TaskTestUtils.TABLE_SCAN_NODE_ID;
 import static com.facebook.presto.execution.TaskTestUtils.createTestSplitMonitor;
 import static com.facebook.presto.execution.buffer.BufferState.OPEN;
@@ -96,7 +99,8 @@ import static com.facebook.presto.execution.buffer.OutputBuffers.createInitialEm
 import static com.facebook.presto.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
 import static com.facebook.presto.operator.PipelineExecutionStrategy.GROUPED_EXECUTION;
 import static com.facebook.presto.operator.PipelineExecutionStrategy.UNGROUPED_EXECUTION;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
+import static com.facebook.presto.spi.SplitContext.NON_CACHEABLE;
+import static com.facebook.presto.spi.schedule.NodeSelectionStrategy.NO_PREFERENCE;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
@@ -131,7 +135,7 @@ public class TestSqlTaskExecution
     {
         ScheduledExecutorService taskNotificationExecutor = newScheduledThreadPool(10, threadsNamed("task-notification-%s"));
         ScheduledExecutorService driverYieldExecutor = newScheduledThreadPool(2, threadsNamed("driver-yield-%s"));
-        TaskExecutor taskExecutor = new TaskExecutor(5, 10, 3, 4, Ticker.systemTicker());
+        TaskExecutor taskExecutor = new TaskExecutor(5, 10, 3, 4, TASK_FAIR, Ticker.systemTicker());
         taskExecutor.start();
 
         try {
@@ -306,7 +310,7 @@ public class TestSqlTaskExecution
     {
         ScheduledExecutorService taskNotificationExecutor = newScheduledThreadPool(10, threadsNamed("task-notification-%s"));
         ScheduledExecutorService driverYieldExecutor = newScheduledThreadPool(2, threadsNamed("driver-yield-%s"));
-        TaskExecutor taskExecutor = new TaskExecutor(5, 10, 3, 4, Ticker.systemTicker());
+        TaskExecutor taskExecutor = new TaskExecutor(5, 10, 3, 4, TASK_FAIR, Ticker.systemTicker());
         taskExecutor.start();
 
         try {
@@ -610,13 +614,14 @@ public class TestSqlTaskExecution
                 new QueryId("queryid"),
                 new DataSize(1, MEGABYTE),
                 new DataSize(2, MEGABYTE),
+                new DataSize(1, MEGABYTE),
                 new MemoryPool(new MemoryPoolId("test"), new DataSize(1, GIGABYTE)),
                 new TestingGcMonitor(),
                 taskNotificationExecutor,
                 driverYieldExecutor,
                 new DataSize(1, MEGABYTE),
                 new SpillSpaceTracker(new DataSize(1, GIGABYTE)));
-        return queryContext.addTaskContext(taskStateMachine, TEST_SESSION, false, false, OptionalInt.empty(), false);
+        return queryContext.addTaskContext(taskStateMachine, TEST_SESSION, false, false, false, false, false);
     }
 
     private PartitionedOutputBuffer newTestingOutputBuffer(ScheduledExecutorService taskNotificationExecutor)
@@ -704,7 +709,7 @@ public class TestSqlTaskExecution
 
     private ScheduledSplit newScheduledSplit(int sequenceId, PlanNodeId planNodeId, Lifespan lifespan, int begin, int count)
     {
-        return new ScheduledSplit(sequenceId, planNodeId, new Split(CONNECTOR_ID, TRANSACTION_HANDLE, new TestingSplit(begin, begin + count), lifespan));
+        return new ScheduledSplit(sequenceId, planNodeId, new Split(CONNECTOR_ID, TRANSACTION_HANDLE, new TestingSplit(begin, begin + count), lifespan, NON_CACHEABLE));
     }
 
     public static class Pauser
@@ -1332,13 +1337,13 @@ public class TestSqlTaskExecution
         }
 
         @Override
-        public boolean isRemotelyAccessible()
+        public NodeSelectionStrategy getNodeSelectionStrategy()
         {
-            return true;
+            return NO_PREFERENCE;
         }
 
         @Override
-        public List<HostAddress> getAddresses()
+        public List<HostAddress> getPreferredNodes(List<HostAddress> sortedCandidates)
         {
             return ImmutableList.of();
         }

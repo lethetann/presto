@@ -152,6 +152,11 @@ public abstract class AstVisitor<R, C>
         return visitStatement(node, context);
     }
 
+    protected R visitShowCreateFunction(ShowCreateFunction node, C context)
+    {
+        return visitStatement(node, context);
+    }
+
     protected R visitShowFunctions(ShowFunctions node, C context)
     {
         return visitStatement(node, context);
@@ -587,6 +592,11 @@ public abstract class AstVisitor<R, C>
         return visitStatement(node, context);
     }
 
+    protected R visitAlterFunction(AlterFunction node, C context)
+    {
+        return visitStatement(node, context);
+    }
+
     protected R visitDropFunction(CreateFunction node, C context)
     {
         return visitStatement(node, context);
@@ -755,5 +765,19 @@ public abstract class AstVisitor<R, C>
     protected R visitCurrentUser(CurrentUser node, C context)
     {
         return visitExpression(node, context);
+    }
+
+    protected R visitRoutineBody(RoutineBody node, C context)
+    {
+        return visitNode(node, context);
+    }
+    protected R visitReturn(Return node, C context)
+    {
+        return visitNode(node, context);
+    }
+
+    protected R visitExternalBodyReference(ExternalBodyReference node, C context)
+    {
+        return visitNode(node, context);
     }
 }

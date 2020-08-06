@@ -13,14 +13,14 @@
  */
 package com.facebook.presto.operator;
 
-import com.facebook.presto.execution.buffer.PagesSerde;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.SortOrder;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.execution.buffer.PagesSerdeFactory;
 import com.facebook.presto.metadata.Split;
-import com.facebook.presto.spi.Page;
 import com.facebook.presto.spi.UpdatablePageSource;
-import com.facebook.presto.spi.block.SortOrder;
+import com.facebook.presto.spi.page.PagesSerde;
 import com.facebook.presto.spi.plan.PlanNodeId;
-import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.split.RemoteSplit;
 import com.facebook.presto.sql.gen.OrderingCompiler;
 import com.google.common.io.Closer;
@@ -160,7 +160,7 @@ public class MergeOperator
 
         RemoteSplit remoteSplit = (RemoteSplit) split.getConnectorSplit();
         ExchangeClient exchangeClient = closer.register(taskExchangeClientManager.createExchangeClient(operatorContext.localSystemMemoryContext()));
-        exchangeClient.addLocation(remoteSplit.getLocation(), remoteSplit.getRemoteSourceTaskId());
+        exchangeClient.addLocation(remoteSplit.getLocation().toURI(), remoteSplit.getRemoteSourceTaskId());
         exchangeClient.noMoreLocations();
         pageProducers.add(exchangeClient.pages()
                 .map(serializedPage -> {

@@ -13,11 +13,12 @@
  */
 package com.facebook.presto.orc;
 
+import com.facebook.presto.common.block.Block;
 import com.facebook.presto.orc.cache.StorageOrcFileTailSource;
 import com.facebook.presto.orc.metadata.CompressionKind;
 import com.facebook.presto.orc.metadata.Footer;
 import com.facebook.presto.orc.metadata.statistics.IntegerStatistics;
-import com.facebook.presto.spi.block.Block;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Maps;
 import io.airlift.slice.Slice;
@@ -44,6 +45,10 @@ import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.util.Map;
 
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
+import static com.facebook.presto.orc.DwrfEncryptionProvider.NO_ENCRYPTION;
+import static com.facebook.presto.orc.NoopOrcAggregatedMemoryContext.NOOP_ORC_AGGREGATED_MEMORY_CONTEXT;
 import static com.facebook.presto.orc.OrcEncoding.ORC;
 import static com.facebook.presto.orc.OrcReader.BATCH_SIZE_GROWTH_FACTOR;
 import static com.facebook.presto.orc.OrcReader.INITIAL_BATCH_SIZE;
@@ -53,8 +58,6 @@ import static com.facebook.presto.orc.OrcTester.MAX_BLOCK_SIZE;
 import static com.facebook.presto.orc.OrcTester.createCustomOrcRecordReader;
 import static com.facebook.presto.orc.OrcTester.createOrcRecordWriter;
 import static com.facebook.presto.orc.OrcTester.createSettableStructObjectInspector;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
 import static io.airlift.units.DataSize.Unit.MEGABYTE;
 import static java.lang.Math.min;
 import static java.nio.charset.StandardCharsets.UTF_8;
@@ -71,7 +74,7 @@ public class TestOrcReaderPositions
         try (TempFile tempFile = new TempFile()) {
             createMultiStripeFile(tempFile.getFile());
 
-            try (OrcBatchRecordReader reader = createCustomOrcRecordReader(tempFile, ORC, OrcPredicate.TRUE, BIGINT, MAX_BATCH_SIZE)) {
+            try (OrcBatchRecordReader reader = createCustomOrcRecordReader(tempFile, ORC, OrcPredicate.TRUE, BIGINT, MAX_BATCH_SIZE, false)) {
                 assertEquals(reader.getReaderRowCount(), 100);
                 assertEquals(reader.getReaderPosition(), 0);
                 assertEquals(reader.getFileRowCount(), reader.getReaderRowCount());
@@ -108,7 +111,7 @@ public class TestOrcReaderPositions
                         ((stats.getMin() == 180) && (stats.getMax() == 237));
             };
 
-            try (OrcBatchRecordReader reader = createCustomOrcRecordReader(tempFile, ORC, predicate, BIGINT, MAX_BATCH_SIZE)) {
+            try (OrcBatchRecordReader reader = createCustomOrcRecordReader(tempFile, ORC, predicate, BIGINT, MAX_BATCH_SIZE, false)) {
                 assertEquals(reader.getFileRowCount(), 100);
                 assertEquals(reader.getReaderRowCount(), 40);
                 assertEquals(reader.getFilePosition(), 0);
@@ -151,7 +154,7 @@ public class TestOrcReaderPositions
                 return (stats.getMin() == 50_000) || (stats.getMin() == 60_000);
             };
 
-            try (OrcBatchRecordReader reader = createCustomOrcRecordReader(tempFile, ORC, predicate, BIGINT, MAX_BATCH_SIZE)) {
+            try (OrcBatchRecordReader reader = createCustomOrcRecordReader(tempFile, ORC, predicate, BIGINT, MAX_BATCH_SIZE, false)) {
                 assertEquals(reader.getFileRowCount(), rowCount);
                 assertEquals(reader.getReaderRowCount(), rowCount);
                 assertEquals(reader.getFilePosition(), 0);
@@ -200,7 +203,7 @@ public class TestOrcReaderPositions
             int rowCount = rowsInRowGroup * rowGroupCounts;
             createGrowingSequentialFile(tempFile.getFile(), rowCount, rowsInRowGroup, baseStringBytes);
 
-            try (OrcBatchRecordReader reader = createCustomOrcRecordReader(tempFile, ORC, OrcPredicate.TRUE, VARCHAR, MAX_BATCH_SIZE)) {
+            try (OrcBatchRecordReader reader = createCustomOrcRecordReader(tempFile, ORC, OrcPredicate.TRUE, VARCHAR, MAX_BATCH_SIZE, false)) {
                 assertEquals(reader.getFileRowCount(), rowCount);
                 assertEquals(reader.getReaderRowCount(), rowCount);
                 assertEquals(reader.getFilePosition(), 0);
@@ -257,7 +260,7 @@ public class TestOrcReaderPositions
             int rowCount = rowsInRowGroup * rowGroupCounts;
             createSequentialFile(tempFile.getFile(), rowCount);
 
-            try (OrcBatchRecordReader reader = createCustomOrcRecordReader(tempFile, ORC, OrcPredicate.TRUE, BIGINT, MAX_BATCH_SIZE)) {
+            try (OrcBatchRecordReader reader = createCustomOrcRecordReader(tempFile, ORC, OrcPredicate.TRUE, BIGINT, MAX_BATCH_SIZE, false)) {
                 assertEquals(reader.getFileRowCount(), rowCount);
                 assertEquals(reader.getReaderRowCount(), rowCount);
                 assertEquals(reader.getFilePosition(), 0);
@@ -303,7 +306,10 @@ public class TestOrcReaderPositions
                     ORC,
                     new StorageOrcFileTailSource(),
                     new StorageStripeMetadataSource(),
-                    OrcReaderTestingUtils.createDefaultTestConfig());
+                    NOOP_ORC_AGGREGATED_MEMORY_CONTEXT,
+                    OrcReaderTestingUtils.createDefaultTestConfig(),
+                    false,
+                    NO_ENCRYPTION);
             Footer footer = orcReader.getFooter();
             Map<String, String> readMetadata = Maps.transformValues(footer.getUserMetadata(), Slice::toStringAscii);
             assertEquals(readMetadata, metadata);
@@ -318,15 +324,41 @@ public class TestOrcReaderPositions
             // Create a file with 5 stripes of 20 rows each.
             createMultiStripeFile(tempFile.getFile());
 
-            try (OrcBatchRecordReader reader = createCustomOrcRecordReader(tempFile, ORC, OrcPredicate.TRUE, BIGINT, INITIAL_BATCH_SIZE)) {
+            try (OrcBatchRecordReader reader = createCustomOrcRecordReader(tempFile, ORC, OrcPredicate.TRUE, BIGINT, INITIAL_BATCH_SIZE, false)) {
                 assertEquals(reader.getReaderRowCount(), 100);
                 assertEquals(reader.getReaderPosition(), 0);
                 assertEquals(reader.getFileRowCount(), reader.getReaderRowCount());
                 assertEquals(reader.getFilePosition(), reader.getReaderPosition());
 
-                // The batch size should start from INITIAL_BATCH_SIZE and grow by BATCH_SIZE_GROWTH_FACTOR.
-                // For INITIAL_BATCH_SIZE = 1 and BATCH_SIZE_GROWTH_FACTOR = 2, the batchSize sequence should be
-                // 1, 2, 4, 8, 5, 20, 20, 20, 20
+                // Since all columns are fixed size, all batches should be of 20 rows
+                int totalReadRows = 0;
+                while (true) {
+                    int batchSize = reader.nextBatch();
+                    if (batchSize == -1) {
+                        break;
+                    }
+
+                    assertEquals(batchSize, 20);
+                    assertEquals(reader.getReaderPosition(), totalReadRows);
+                    assertEquals(reader.getFilePosition(), reader.getReaderPosition());
+                    assertCurrentBatch(reader, (int) reader.getReaderPosition(), batchSize);
+
+                    totalReadRows += batchSize;
+                }
+
+                assertEquals(reader.getReaderPosition(), 100);
+                assertEquals(reader.getFilePosition(), reader.getReaderPosition());
+            }
+
+            try (OrcBatchRecordReader reader = createCustomOrcRecordReader(tempFile, ORC, OrcPredicate.TRUE, ImmutableList.of(BIGINT, VARCHAR), INITIAL_BATCH_SIZE, false)) {
+                assertEquals(reader.getReaderRowCount(), 100);
+                assertEquals(reader.getReaderPosition(), 0);
+                assertEquals(reader.getFileRowCount(), reader.getReaderRowCount());
+                assertEquals(reader.getFilePosition(), reader.getReaderPosition());
+
+                // Since there is a variable width column, the batch size should start from INITIAL_BATCH_SIZE
+                // and grow by BATCH_SIZE_GROWTH_FACTOR. For INITIAL_BATCH_SIZE = 1 and BATCH_SIZE_GROWTH_FACTOR = 2,
+                // the batchSize sequence should be 1, 2, 4, 8, 5, 20, 20, 20, 20
                 int totalReadRows = 0;
                 int nextBatchSize = INITIAL_BATCH_SIZE;
                 int expectedBatchSize = INITIAL_BATCH_SIZE;
@@ -388,19 +420,21 @@ public class TestOrcReaderPositions
     private static void createMultiStripeFile(File file)
             throws IOException, ReflectiveOperationException, SerDeException
     {
-        FileSinkOperator.RecordWriter writer = createOrcRecordWriter(file, ORC_12, CompressionKind.NONE, BIGINT);
+        FileSinkOperator.RecordWriter writer = createOrcRecordWriter(file, ORC_12, CompressionKind.NONE, ImmutableList.of(BIGINT, VARCHAR));
 
         @SuppressWarnings("deprecation") Serializer serde = new OrcSerde();
-        SettableStructObjectInspector objectInspector = createSettableStructObjectInspector("test", BIGINT);
+        SettableStructObjectInspector objectInspector = createSettableStructObjectInspector(ImmutableList.of(BIGINT, VARCHAR));
         Object row = objectInspector.create();
-        StructField field = objectInspector.getAllStructFieldRefs().get(0);
+        StructField bigintField = objectInspector.getAllStructFieldRefs().get(0);
+        StructField varcharField = objectInspector.getAllStructFieldRefs().get(1);
 
         for (int i = 0; i < 300; i += 3) {
             if ((i > 0) && (i % 60 == 0)) {
                 flushWriter(writer);
             }
 
-            objectInspector.setStructFieldData(row, field, (long) i);
+            objectInspector.setStructFieldData(row, bigintField, (long) i);
+            objectInspector.setStructFieldData(row, varcharField, String.valueOf(i));
             Writable record = serde.serialize(row, objectInspector);
             writer.write(record);
         }

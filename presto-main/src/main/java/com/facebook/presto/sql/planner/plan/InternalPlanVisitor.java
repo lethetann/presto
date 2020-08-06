@@ -29,11 +29,6 @@ public abstract class InternalPlanVisitor<R, C>
         return visitPlan(node, context);
     }
 
-    public R visitDistinctLimit(DistinctLimitNode node, C context)
-    {
-        return visitPlan(node, context);
-    }
-
     public R visitSample(SampleNode node, C context)
     {
         return visitPlan(node, context);
@@ -110,11 +105,6 @@ public abstract class InternalPlanVisitor<R, C>
     }
 
     public R visitUnnest(UnnestNode node, C context)
-    {
-        return visitPlan(node, context);
-    }
-
-    public R visitMarkDistinct(MarkDistinctNode node, C context)
     {
         return visitPlan(node, context);
     }

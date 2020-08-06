@@ -14,9 +14,7 @@
 package com.facebook.presto.verifier.framework;
 
 import com.facebook.presto.sql.parser.SqlParserOptions;
-import com.facebook.presto.sql.tree.Property;
 import com.facebook.presto.verifier.prestoaction.SqlExceptionClassifier;
-import com.facebook.presto.verifier.resolver.FailureResolverFactory;
 import com.google.inject.Module;
 
 import java.util.List;
@@ -34,11 +32,9 @@ public interface VerifyCommand
 
     Set<String> getCustomEventClientTypes();
 
+    Set<String> getCustomQueryActionTypes();
+
     List<Class<? extends Predicate<SourceQuery>>> getCustomQueryFilterClasses();
 
     SqlExceptionClassifier getSqlExceptionClassifier();
-
-    List<FailureResolverFactory> getFailureResolverFactories();
-
-    List<Property> getTablePropertyOverrides();
 }

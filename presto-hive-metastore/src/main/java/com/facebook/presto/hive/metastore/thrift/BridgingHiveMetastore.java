@@ -13,7 +13,10 @@
  */
 package com.facebook.presto.hive.metastore.thrift;
 
+import com.facebook.presto.common.predicate.Domain;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.hive.HiveType;
+import com.facebook.presto.hive.metastore.Column;
 import com.facebook.presto.hive.metastore.Database;
 import com.facebook.presto.hive.metastore.ExtendedHiveMetastore;
 import com.facebook.presto.hive.metastore.HivePrivilegeInfo;
@@ -30,7 +33,6 @@ import com.facebook.presto.spi.TableNotFoundException;
 import com.facebook.presto.spi.security.PrestoPrincipal;
 import com.facebook.presto.spi.security.RoleGrant;
 import com.facebook.presto.spi.statistics.ColumnStatisticType;
-import com.facebook.presto.spi.type.Type;
 import com.google.common.collect.ImmutableMap;
 import org.apache.hadoop.hive.metastore.api.FieldSchema;
 
@@ -252,9 +254,12 @@ public class BridgingHiveMetastore
     }
 
     @Override
-    public Optional<List<String>> getPartitionNamesByParts(String databaseName, String tableName, List<String> parts)
+    public List<String> getPartitionNamesByFilter(
+            String databaseName,
+            String tableName,
+            Map<Column, Domain> partitionPredicates)
     {
-        return delegate.getPartitionNamesByParts(databaseName, tableName, parts);
+        return delegate.getPartitionNamesByFilter(databaseName, tableName, partitionPredicates);
     }
 
     @Override

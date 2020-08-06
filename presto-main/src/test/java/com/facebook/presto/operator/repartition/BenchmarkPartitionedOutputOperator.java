@@ -15,13 +15,15 @@ package com.facebook.presto.operator.repartition;
 
 import com.facebook.presto.Session;
 import com.facebook.presto.block.BlockEncodingManager;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.type.ArrayType;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.execution.Lifespan;
 import com.facebook.presto.execution.StateMachine;
 import com.facebook.presto.execution.buffer.BufferState;
 import com.facebook.presto.execution.buffer.OutputBuffers;
 import com.facebook.presto.execution.buffer.PagesSerdeFactory;
 import com.facebook.presto.execution.buffer.PartitionedOutputBuffer;
-import com.facebook.presto.execution.buffer.SerializedPage;
 import com.facebook.presto.memory.context.LocalMemoryContext;
 import com.facebook.presto.memory.context.SimpleLocalMemoryContext;
 import com.facebook.presto.operator.BucketPartitionFunction;
@@ -32,10 +34,9 @@ import com.facebook.presto.operator.PrecomputedHashGenerator;
 import com.facebook.presto.operator.exchange.LocalPartitionGenerator;
 import com.facebook.presto.operator.repartition.OptimizedPartitionedOutputOperator.OptimizedPartitionedOutputFactory;
 import com.facebook.presto.operator.repartition.PartitionedOutputOperator.PartitionedOutputFactory;
-import com.facebook.presto.spi.Page;
+import com.facebook.presto.spi.page.SerializedPage;
 import com.facebook.presto.spi.plan.PlanNodeId;
-import com.facebook.presto.spi.type.ArrayType;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.sql.planner.OutputPartitioning;
 import com.facebook.presto.testing.TestingTaskContext;
 import com.facebook.presto.type.TypeRegistry;
 import com.google.common.collect.ImmutableList;
@@ -56,6 +57,7 @@ import org.openjdk.jmh.runner.RunnerException;
 import org.openjdk.jmh.runner.options.Options;
 import org.openjdk.jmh.runner.options.OptionsBuilder;
 import org.openjdk.jmh.runner.options.VerboseMode;
+import org.testng.annotations.Test;
 
 import java.util.List;
 import java.util.Optional;
@@ -69,6 +71,14 @@ import java.util.stream.IntStream;
 
 import static com.facebook.airlift.concurrent.Threads.daemonThreadsNamed;
 import static com.facebook.presto.block.BlockAssertions.createMapType;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.DecimalType.createDecimalType;
+import static com.facebook.presto.common.type.Decimals.MAX_SHORT_PRECISION;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.RowType.withDefaultFieldNames;
+import static com.facebook.presto.common.type.SmallintType.SMALLINT;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.facebook.presto.execution.buffer.BufferState.OPEN;
 import static com.facebook.presto.execution.buffer.BufferState.TERMINAL_BUFFER_STATES;
 import static com.facebook.presto.execution.buffer.OutputBuffers.BufferType.PARTITIONED;
@@ -77,14 +87,6 @@ import static com.facebook.presto.memory.context.AggregatedMemoryContext.newSimp
 import static com.facebook.presto.operator.PageAssertions.createDictionaryPageWithRandomData;
 import static com.facebook.presto.operator.PageAssertions.createRlePageWithRandomData;
 import static com.facebook.presto.operator.PageAssertions.updateBlockTypesWithHashBlockAndNullBlock;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.DecimalType.createDecimalType;
-import static com.facebook.presto.spi.type.Decimals.MAX_SHORT_PRECISION;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
-import static com.facebook.presto.spi.type.RowType.withDefaultFieldNames;
-import static com.facebook.presto.spi.type.SmallintType.SMALLINT;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
 import static com.facebook.presto.sql.planner.SystemPartitioningHandle.SystemPartitionFunction.HASH;
 import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
 import static com.facebook.presto.tpch.TpchMetadata.TINY_SCHEMA_NAME;
@@ -124,6 +126,22 @@ public class BenchmarkPartitionedOutputOperator
         operator.finish();
     }
 
+    @Test
+    public void verifyAddPage()
+    {
+        BenchmarkData data = new BenchmarkData();
+        data.setup();
+        new BenchmarkPartitionedOutputOperator().addPage(data);
+    }
+
+    @Test
+    public void verifyOptimizedAddPage()
+    {
+        BenchmarkData data = new BenchmarkData();
+        data.setup();
+        new BenchmarkPartitionedOutputOperator().optimizedAddPage(data);
+    }
+
     @State(Scope.Thread)
     public static class BenchmarkData
     {
@@ -138,11 +156,9 @@ public class BenchmarkPartitionedOutputOperator
         @Param({"true", "false"})
         private boolean enableCompression;
 
-        @SuppressWarnings("unused")
         @Param({"1", "2"})
-        private int channelCount;
+        private int channelCount = 1;
 
-        @SuppressWarnings("unused")
         @Param({
                 "BIGINT",
                 "DICTIONARY(BIGINT)",
@@ -158,8 +174,9 @@ public class BenchmarkPartitionedOutputOperator
                 "MAP(BIGINT,BIGINT)",
                 "MAP(BIGINT,MAP(BIGINT,BIGINT))",
                 "ROW(BIGINT,BIGINT)",
-                "ROW(ARRAY(BIGINT),ARRAY(BIGINT))"})
-        private String type;
+                "ROW(ARRAY(BIGINT),ARRAY(BIGINT))"
+        })
+        private String type = "BIGINT";
 
         @SuppressWarnings("unused")
         @Param({"true", "false"})
@@ -177,80 +194,87 @@ public class BenchmarkPartitionedOutputOperator
 
         private void createPages(String inputType)
         {
+            float primitiveNullRate = 0.0f;
+            float nestedNullRate = 0.0f;
+
+            if (hasNull) {
+                primitiveNullRate = 0.2f;
+                nestedNullRate = 0.2f;
+            }
             switch (inputType) {
                 case "BIGINT":
                     types = nCopies(channelCount, BIGINT);
-                    dataPage = PageAssertions.createPageWithRandomData(types, POSITION_COUNT, hasNull);
+                    dataPage = PageAssertions.createPageWithRandomData(types, POSITION_COUNT, primitiveNullRate, nestedNullRate);
                     pageCount = 5000;
                     break;
                 case "DICTIONARY(BIGINT)":
                     types = nCopies(channelCount, BIGINT);
-                    dataPage = createDictionaryPageWithRandomData(types, POSITION_COUNT, hasNull);
+                    dataPage = createDictionaryPageWithRandomData(types, POSITION_COUNT, primitiveNullRate, nestedNullRate);
                     pageCount = 3000;
                     break;
                 case "RLE(BIGINT)":
                     types = nCopies(channelCount, BIGINT);
-                    dataPage = createRlePageWithRandomData(types, POSITION_COUNT, hasNull);
+                    dataPage = createRlePageWithRandomData(types, POSITION_COUNT, primitiveNullRate, nestedNullRate);
                     pageCount = 3000;
                     break;
                 case "LONG_DECIMAL":
                     types = nCopies(channelCount, createDecimalType(MAX_SHORT_PRECISION + 1));
-                    dataPage = PageAssertions.createPageWithRandomData(types, POSITION_COUNT, hasNull);
+                    dataPage = PageAssertions.createPageWithRandomData(types, POSITION_COUNT, primitiveNullRate, nestedNullRate);
                     pageCount = 5000;
                     break;
                 case "INTEGER":
                     types = nCopies(channelCount, INTEGER);
-                    dataPage = PageAssertions.createPageWithRandomData(types, POSITION_COUNT, hasNull);
+                    dataPage = PageAssertions.createPageWithRandomData(types, POSITION_COUNT, primitiveNullRate, nestedNullRate);
                     pageCount = 5000;
                     break;
                 case "SMALLINT":
                     types = nCopies(channelCount, SMALLINT);
-                    dataPage = PageAssertions.createPageWithRandomData(types, POSITION_COUNT, hasNull);
+                    dataPage = PageAssertions.createPageWithRandomData(types, POSITION_COUNT, primitiveNullRate, nestedNullRate);
                     pageCount = 5000;
                     break;
                 case "BOOLEAN":
                     types = nCopies(channelCount, BOOLEAN);
-                    dataPage = PageAssertions.createPageWithRandomData(types, POSITION_COUNT, hasNull);
+                    dataPage = PageAssertions.createPageWithRandomData(types, POSITION_COUNT, primitiveNullRate, nestedNullRate);
                     pageCount = 5000;
                     break;
                 case "VARCHAR":
                     types = nCopies(channelCount, VARCHAR);
-                    dataPage = PageAssertions.createPageWithRandomData(types, POSITION_COUNT, hasNull);
+                    dataPage = PageAssertions.createPageWithRandomData(types, POSITION_COUNT, primitiveNullRate, nestedNullRate);
                     pageCount = 5000;
                     break;
                 case "ARRAY(BIGINT)":
                     types = nCopies(channelCount, new ArrayType(BIGINT));
-                    dataPage = PageAssertions.createPageWithRandomData(types, POSITION_COUNT, hasNull);
+                    dataPage = PageAssertions.createPageWithRandomData(types, POSITION_COUNT, primitiveNullRate, nestedNullRate);
                     pageCount = 1000;
                     break;
                 case "ARRAY(VARCHAR)":
                     types = nCopies(channelCount, new ArrayType(VARCHAR));
-                    dataPage = PageAssertions.createPageWithRandomData(types, POSITION_COUNT, hasNull);
+                    dataPage = PageAssertions.createPageWithRandomData(types, POSITION_COUNT, primitiveNullRate, nestedNullRate);
                     pageCount = 1000;
                     break;
                 case "ARRAY(ARRAY(BIGINT))":
                     types = nCopies(channelCount, new ArrayType(new ArrayType(BIGINT)));
-                    dataPage = PageAssertions.createPageWithRandomData(types, POSITION_COUNT, hasNull);
+                    dataPage = PageAssertions.createPageWithRandomData(types, POSITION_COUNT, primitiveNullRate, nestedNullRate);
                     pageCount = 1000;
                     break;
                 case "MAP(BIGINT,BIGINT)":
                     types = nCopies(channelCount, createMapType(BIGINT, BIGINT));
-                    dataPage = PageAssertions.createPageWithRandomData(types, POSITION_COUNT, hasNull);
+                    dataPage = PageAssertions.createPageWithRandomData(types, POSITION_COUNT, primitiveNullRate, nestedNullRate);
                     pageCount = 1000;
                     break;
                 case "MAP(BIGINT,MAP(BIGINT,BIGINT))":
                     types = nCopies(channelCount, createMapType(BIGINT, createMapType(BIGINT, BIGINT)));
-                    dataPage = PageAssertions.createPageWithRandomData(types, POSITION_COUNT, hasNull);
+                    dataPage = PageAssertions.createPageWithRandomData(types, POSITION_COUNT, primitiveNullRate, nestedNullRate);
                     pageCount = 1000;
                     break;
                 case "ROW(BIGINT,BIGINT)":
                     types = nCopies(channelCount, withDefaultFieldNames(ImmutableList.of(BIGINT, BIGINT)));
-                    dataPage = PageAssertions.createPageWithRandomData(types, POSITION_COUNT, hasNull);
+                    dataPage = PageAssertions.createPageWithRandomData(types, POSITION_COUNT, primitiveNullRate, nestedNullRate);
                     pageCount = 1000;
                     break;
                 case "ROW(ARRAY(BIGINT),ARRAY(BIGINT))":
                     types = nCopies(channelCount, withDefaultFieldNames(ImmutableList.of(new ArrayType(BIGINT), new ArrayType(BIGINT))));
-                    dataPage = PageAssertions.createPageWithRandomData(types, POSITION_COUNT, hasNull);
+                    dataPage = PageAssertions.createPageWithRandomData(types, POSITION_COUNT, primitiveNullRate, nestedNullRate);
                     pageCount = 1000;
                     break;
 
@@ -280,42 +304,41 @@ public class BenchmarkPartitionedOutputOperator
             PartitionFunction partitionFunction = new BucketPartitionFunction(
                     HASH.createBucketFunction(ImmutableList.of(BIGINT), true, PARTITION_COUNT),
                     IntStream.range(0, PARTITION_COUNT).toArray());
+            OutputPartitioning outputPartitioning = createOutputPartitioning(partitionFunction);
 
             PagesSerdeFactory serdeFactory = new PagesSerdeFactory(new BlockEncodingManager(new TypeRegistry()), enableCompression);
             PartitionedOutputBuffer buffer = createPartitionedOutputBuffer();
 
-            OptimizedPartitionedOutputFactory operatorFactory = new OptimizedPartitionedOutputFactory(
-                    partitionFunction,
-                    ImmutableList.of(0),
-                    ImmutableList.of(Optional.empty()),
-                    false,
-                    OptionalInt.empty(),
-                    buffer,
-                    MAX_PARTITION_BUFFER_SIZE);
+            OptimizedPartitionedOutputFactory operatorFactory = new OptimizedPartitionedOutputFactory(buffer, MAX_PARTITION_BUFFER_SIZE);
 
             return (OptimizedPartitionedOutputOperator) operatorFactory
-                    .createOutputOperator(0, new PlanNodeId("plan-node-0"), types, Function.identity(), serdeFactory)
+                    .createOutputOperator(0, new PlanNodeId("plan-node-0"), types, Function.identity(), Optional.of(outputPartitioning), serdeFactory)
                     .createOperator(createDriverContext());
         }
 
         private PartitionedOutputOperator createPartitionedOutputOperator()
         {
             PartitionFunction partitionFunction = new LocalPartitionGenerator(new PrecomputedHashGenerator(0), PARTITION_COUNT);
+            OutputPartitioning outputPartitioning = createOutputPartitioning(partitionFunction);
+
             PagesSerdeFactory serdeFactory = new PagesSerdeFactory(new BlockEncodingManager(new TypeRegistry()), enableCompression);
             PartitionedOutputBuffer buffer = createPartitionedOutputBuffer();
 
-            PartitionedOutputFactory operatorFactory = new PartitionedOutputFactory(
-                    partitionFunction,
-                    ImmutableList.of(0),
-                    ImmutableList.of(Optional.empty()),
-                    false,
-                    OptionalInt.empty(),
-                    buffer,
-                    MAX_PARTITION_BUFFER_SIZE);
+            PartitionedOutputFactory operatorFactory = new PartitionedOutputFactory(buffer, MAX_PARTITION_BUFFER_SIZE);
 
             return (PartitionedOutputOperator) operatorFactory
-                    .createOutputOperator(0, new PlanNodeId("plan-node-0"), types, Function.identity(), serdeFactory)
+                    .createOutputOperator(0, new PlanNodeId("plan-node-0"), types, Function.identity(), Optional.of(outputPartitioning), serdeFactory)
                     .createOperator(createDriverContext());
+        }
+
+        private OutputPartitioning createOutputPartitioning(PartitionFunction partitionFunction)
+        {
+            return new OutputPartitioning(
+                    partitionFunction,
+                    ImmutableList.of(0),
+                    ImmutableList.of(Optional.empty(), Optional.empty()),
+                    false,
+                    OptionalInt.empty());
         }
 
         private DriverContext createDriverContext()
@@ -369,10 +392,6 @@ public class BenchmarkPartitionedOutputOperator
     public static void main(String[] args)
             throws RunnerException
     {
-        BenchmarkData data = new BenchmarkData();
-        data.setup();
-        new BenchmarkPartitionedOutputOperator().optimizedAddPage(data);
-
         Options options = new OptionsBuilder()
                 .verbosity(VerboseMode.NORMAL)
                 .jvmArgs("-Xmx10g")

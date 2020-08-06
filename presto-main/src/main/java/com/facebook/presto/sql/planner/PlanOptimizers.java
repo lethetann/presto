@@ -49,6 +49,7 @@ import com.facebook.presto.sql.planner.iterative.rule.MergeLimitWithTopN;
 import com.facebook.presto.sql.planner.iterative.rule.MergeLimits;
 import com.facebook.presto.sql.planner.iterative.rule.MultipleDistinctAggregationToMarkDistinct;
 import com.facebook.presto.sql.planner.iterative.rule.PickTableLayout;
+import com.facebook.presto.sql.planner.iterative.rule.PlanRemotePojections;
 import com.facebook.presto.sql.planner.iterative.rule.PruneAggregationColumns;
 import com.facebook.presto.sql.planner.iterative.rule.PruneAggregationSourceColumns;
 import com.facebook.presto.sql.planner.iterative.rule.PruneCountAggregationOverScalar;
@@ -62,6 +63,7 @@ import com.facebook.presto.sql.planner.iterative.rule.PruneMarkDistinctColumns;
 import com.facebook.presto.sql.planner.iterative.rule.PruneOrderByInAggregation;
 import com.facebook.presto.sql.planner.iterative.rule.PruneOutputColumns;
 import com.facebook.presto.sql.planner.iterative.rule.PruneProjectColumns;
+import com.facebook.presto.sql.planner.iterative.rule.PruneRedundantProjectionAssignments;
 import com.facebook.presto.sql.planner.iterative.rule.PruneSemiJoinColumns;
 import com.facebook.presto.sql.planner.iterative.rule.PruneSemiJoinFilteringSourceColumns;
 import com.facebook.presto.sql.planner.iterative.rule.PruneTableScanColumns;
@@ -69,10 +71,12 @@ import com.facebook.presto.sql.planner.iterative.rule.PruneTopNColumns;
 import com.facebook.presto.sql.planner.iterative.rule.PruneValuesColumns;
 import com.facebook.presto.sql.planner.iterative.rule.PruneWindowColumns;
 import com.facebook.presto.sql.planner.iterative.rule.PushAggregationThroughOuterJoin;
+import com.facebook.presto.sql.planner.iterative.rule.PushDownDereferences;
 import com.facebook.presto.sql.planner.iterative.rule.PushLimitThroughMarkDistinct;
 import com.facebook.presto.sql.planner.iterative.rule.PushLimitThroughOuterJoin;
 import com.facebook.presto.sql.planner.iterative.rule.PushLimitThroughProject;
 import com.facebook.presto.sql.planner.iterative.rule.PushLimitThroughSemiJoin;
+import com.facebook.presto.sql.planner.iterative.rule.PushLimitThroughUnion;
 import com.facebook.presto.sql.planner.iterative.rule.PushPartialAggregationThroughExchange;
 import com.facebook.presto.sql.planner.iterative.rule.PushPartialAggregationThroughJoin;
 import com.facebook.presto.sql.planner.iterative.rule.PushProjectionThroughExchange;
@@ -86,8 +90,11 @@ import com.facebook.presto.sql.planner.iterative.rule.RemoveRedundantIdentityPro
 import com.facebook.presto.sql.planner.iterative.rule.RemoveTrivialFilters;
 import com.facebook.presto.sql.planner.iterative.rule.RemoveUnreferencedScalarApplyNodes;
 import com.facebook.presto.sql.planner.iterative.rule.RemoveUnreferencedScalarLateralNodes;
+import com.facebook.presto.sql.planner.iterative.rule.RemoveUnsupportedDynamicFilters;
 import com.facebook.presto.sql.planner.iterative.rule.ReorderJoins;
+import com.facebook.presto.sql.planner.iterative.rule.RewriteFilterWithExternalFunctionToProject;
 import com.facebook.presto.sql.planner.iterative.rule.RewriteSpatialPartitioningAggregation;
+import com.facebook.presto.sql.planner.iterative.rule.RuntimeReorderJoinSides;
 import com.facebook.presto.sql.planner.iterative.rule.SimplifyCountOverConstant;
 import com.facebook.presto.sql.planner.iterative.rule.SimplifyExpressions;
 import com.facebook.presto.sql.planner.iterative.rule.SimplifyRowExpressions;
@@ -117,7 +124,6 @@ import com.facebook.presto.sql.planner.optimizations.PredicatePushDown;
 import com.facebook.presto.sql.planner.optimizations.PruneUnreferencedOutputs;
 import com.facebook.presto.sql.planner.optimizations.PushdownSubfields;
 import com.facebook.presto.sql.planner.optimizations.ReplicateSemiJoinInDelete;
-import com.facebook.presto.sql.planner.optimizations.RowExpressionPredicatePushDown;
 import com.facebook.presto.sql.planner.optimizations.SetFlatteningOptimizer;
 import com.facebook.presto.sql.planner.optimizations.StatsRecordingPlanOptimizer;
 import com.facebook.presto.sql.planner.optimizations.TransformQuantifiedComparisonApplyToLateralJoin;
@@ -139,7 +145,8 @@ import static com.facebook.presto.sql.planner.ConnectorPlanOptimizerManager.Plan
 
 public class PlanOptimizers
 {
-    private final List<PlanOptimizer> optimizers;
+    private final List<PlanOptimizer> planningTimeOptimizers;
+    private final List<PlanOptimizer> runtimeOptimizers;
     private final RuleStatsRecorder ruleStats = new RuleStatsRecorder();
     private final OptimizerStatsRecorder optimizerStats = new OptimizerStatsRecorder();
     private final MBeanExporter exporter;
@@ -252,10 +259,12 @@ public class PlanOptimizers
                 ruleStats,
                 statsCalculator,
                 estimatedExchangesCostCalculator,
-                new SimplifyRowExpressions(metadata).rules());
+                ImmutableSet.<Rule<?>>builder()
+                        .addAll(new SimplifyRowExpressions(metadata).rules())
+                        .add(new PruneRedundantProjectionAssignments())
+                        .build());
 
         PlanOptimizer predicatePushDown = new StatsRecordingPlanOptimizer(optimizerStats, new PredicatePushDown(metadata, sqlParser));
-        PlanOptimizer rowExpressionPredicatePushDown = new StatsRecordingPlanOptimizer(optimizerStats, new RowExpressionPredicatePushDown(metadata, sqlParser));
 
         builder.add(
                 // Clean up all the sugar in expressions, e.g. AtTimeZone, must be run before all the other optimizers
@@ -298,6 +307,7 @@ public class PlanOptimizers
                                         new PushLimitThroughMarkDistinct(),
                                         new PushLimitThroughOuterJoin(),
                                         new PushLimitThroughSemiJoin(),
+                                        new PushLimitThroughUnion(),
                                         new RemoveTrivialFilters(),
                                         new ImplementFilteredAggregations(),
                                         new SingleDistinctAggregationToGroupBy(),
@@ -359,13 +369,24 @@ public class PlanOptimizers
                                 new InlineProjections(metadata.getFunctionManager()),
                                 new RemoveRedundantIdentityProjections(),
                                 new TransformCorrelatedSingleRowSubqueryToProject())),
-                new CheckSubqueryNodesAreRewritten(),
+                new CheckSubqueryNodesAreRewritten());
+
+        // TODO: move this before optimization if possible!!
+        // Replace all expressions with row expressions
+        builder.add(new IterativeOptimizer(
+                ruleStats,
+                statsCalculator,
+                costCalculator,
+                new TranslateExpressions(metadata, sqlParser).rules()));
+        // After this point, all planNodes should not contain OriginalExpression
+
+        builder.add(
                 predicatePushDown,
                 new IterativeOptimizer(
                         ruleStats,
                         statsCalculator,
                         estimatedExchangesCostCalculator,
-                        new PickTableLayout(metadata, sqlParser).rules()),
+                        new PickTableLayout(metadata).rules()),
                 new PruneUnreferencedOutputs(),
                 new IterativeOptimizer(
                         ruleStats,
@@ -375,7 +396,7 @@ public class PlanOptimizers
                                 new RemoveRedundantIdentityProjections(),
                                 new PushAggregationThroughOuterJoin(metadata.getFunctionManager()))),
                 inlineProjections,
-                simplifyOptimizer, // Re-run the SimplifyExpressions to simplify any recomposed expressions from other optimizations
+                simplifyRowExpressionOptimizer, // Re-run the SimplifyExpressions to simplify any recomposed expressions from other optimizations
                 projectionPushDown,
                 new UnaliasSymbolReferences(metadata.getFunctionManager()), // Run again because predicate pushdown and projection pushdown might add more projections
                 new PruneUnreferencedOutputs(), // Make sure to run this before index join. Filtered projections may not have all the columns.
@@ -402,38 +423,70 @@ public class PlanOptimizers
                         ruleStats,
                         statsCalculator,
                         estimatedExchangesCostCalculator,
-                        ImmutableSet.of(new RemoveRedundantIdentityProjections())),
-                new MetadataQueryOptimizer(metadata),
-                new IterativeOptimizer(
-                        ruleStats,
-                        statsCalculator,
-                        estimatedExchangesCostCalculator,
-                        ImmutableSet.of(new EliminateCrossJoins())), // This can pull up Filter and Project nodes from between Joins, so we need to push them down again
-                predicatePushDown,
-                simplifyOptimizer, // Should be always run after PredicatePushDown
-                new IterativeOptimizer(
-                        ruleStats,
-                        statsCalculator,
-                        estimatedExchangesCostCalculator,
-                        new PickTableLayout(metadata, sqlParser).rules()),
-                projectionPushDown,
-                new PruneUnreferencedOutputs(),
-                new IterativeOptimizer(
-                        ruleStats,
-                        statsCalculator,
-                        estimatedExchangesCostCalculator,
-                        ImmutableSet.of(new RemoveRedundantIdentityProjections())),
-                new PushdownSubfields(metadata),
+                        ImmutableSet.of(new RemoveRedundantIdentityProjections())));
 
+        builder.add(new MetadataQueryOptimizer(metadata));
+
+        // This can pull up Filter and Project nodes from between Joins, so we need to push them down again
+        builder.add(
+                new IterativeOptimizer(
+                        ruleStats,
+                        statsCalculator,
+                        estimatedExchangesCostCalculator,
+                        ImmutableSet.of(new EliminateCrossJoins())),
+                predicatePushDown,
+                simplifyRowExpressionOptimizer); // Should always run simplifyOptimizer after predicatePushDown
+
+        builder.add(new IterativeOptimizer(
+                        ruleStats,
+                        statsCalculator,
+                        estimatedExchangesCostCalculator,
+                        ImmutableSet.<Rule<?>>builder()
+                                .addAll(new PushDownDereferences(metadata).rules())
+                                .build()),
+                    new PruneUnreferencedOutputs());
+
+        builder.add(new IterativeOptimizer(
+                ruleStats,
+                statsCalculator,
+                estimatedExchangesCostCalculator,
+                new PickTableLayout(metadata).rules()));
+
+        // PlanRemoteProjections only handles RowExpression so this need to run after TranslateExpressions
+        // Rules applied after this need to handle locality of ProjectNode properly.
+        builder.add(new IterativeOptimizer(
+                ruleStats,
+                statsCalculator,
+                costCalculator,
+                ImmutableSet.of(
+                        new RewriteFilterWithExternalFunctionToProject(metadata.getFunctionManager()),
+                        new PlanRemotePojections(metadata.getFunctionManager()))));
+
+        // Pass a supplier so that we pickup connector optimizers that are installed later
+        builder.add(
+                new ApplyConnectorOptimization(() -> planOptimizerManager.getOptimizers(LOGICAL)),
+                projectionPushDown,
+                new PruneUnreferencedOutputs());
+
+        builder.add(new IterativeOptimizer(
+                        ruleStats,
+                        statsCalculator,
+                        estimatedExchangesCostCalculator,
+                        ImmutableSet.of(new RemoveRedundantIdentityProjections(), new PruneRedundantProjectionAssignments())),
+                new PushdownSubfields(metadata));
+
+        builder.add(predicatePushDown); // Run predicate push down one more time in case we can leverage new information from layouts' effective predicate
+        builder.add(simplifyRowExpressionOptimizer); // Should be always run after PredicatePushDown
+
+        builder.add(new IterativeOptimizer(
                 // Because ReorderJoins runs only once,
                 // PredicatePushDown, PruneUnreferenedOutputpus and RemoveRedundantIdentityProjections
                 // need to run beforehand in order to produce an optimal join order
                 // It also needs to run after EliminateCrossJoins so that its chosen order doesn't get undone.
-                new IterativeOptimizer(
-                        ruleStats,
-                        statsCalculator,
-                        estimatedExchangesCostCalculator,
-                        ImmutableSet.of(new ReorderJoins(costComparator))));
+                ruleStats,
+                statsCalculator,
+                estimatedExchangesCostCalculator,
+                ImmutableSet.of(new ReorderJoins(costComparator, metadata))));
 
         builder.add(new OptimizeMixedDistinctAggregations(metadata));
         builder.add(new IterativeOptimizer(
@@ -443,28 +496,16 @@ public class PlanOptimizers
                 ImmutableSet.of(
                         new CreatePartialTopN(),
                         new PushTopNThroughUnion())));
+
         builder.add(new IterativeOptimizer(
                 ruleStats,
                 statsCalculator,
                 costCalculator,
                 ImmutableSet.<Rule<?>>builder()
                         .add(new RemoveRedundantIdentityProjections())
-                        .addAll(new ExtractSpatialJoins(metadata, splitManager, pageSourceManager, sqlParser).rules())
+                        .addAll(new ExtractSpatialJoins(metadata, splitManager, pageSourceManager).rules())
                         .add(new InlineProjections(metadata.getFunctionManager()))
                         .build()));
-
-        // TODO: move this before optimization if possible!!
-        // Replace all expressions with row expressions
-        builder.add(new IterativeOptimizer(
-                ruleStats,
-                statsCalculator,
-                costCalculator,
-                new TranslateExpressions(metadata, sqlParser).rules()));
-        // After this point, all planNodes should not contain OriginalExpression
-
-        // TODO: move PushdownSubfields below this rule
-        // Pass a supplier so that we pickup connector optimizers that are installed later
-        builder.add(new ApplyConnectorOptimization(() -> planOptimizerManager.getOptimizers(LOGICAL)));
 
         if (!forceSingleNode) {
             builder.add(new ReplicateSemiJoinInDelete()); // Must run before AddExchanges
@@ -496,7 +537,8 @@ public class PlanOptimizers
                         costCalculator,
                         ImmutableSet.of(new RemoveEmptyDelete()))); // Run RemoveEmptyDelete after table scan is removed by PickTableLayout/AddExchanges
 
-        builder.add(rowExpressionPredicatePushDown); // Run predicate push down one more time in case we can leverage new information from layouts' effective predicate
+        builder.add(predicatePushDown); // Run predicate push down one more time in case we can leverage new information from layouts' effective predicate
+        builder.add(new RemoveUnsupportedDynamicFilters(metadata.getFunctionManager()));
         builder.add(simplifyRowExpressionOptimizer); // Should be always run after PredicatePushDown
         builder.add(projectionPushDown);
         builder.add(inlineProjections);
@@ -540,7 +582,7 @@ public class PlanOptimizers
                         ruleStats,
                         statsCalculator,
                         costCalculator,
-                        ImmutableSet.of(new RemoveRedundantIdentityProjections())));
+                        ImmutableSet.of(new RemoveRedundantIdentityProjections(), new PruneRedundantProjectionAssignments())));
 
         // DO NOT add optimizers that change the plan shape (computations) after this point
 
@@ -550,11 +592,26 @@ public class PlanOptimizers
 
         // TODO: consider adding a formal final plan sanitization optimizer that prepares the plan for transmission/execution/logging
         // TODO: figure out how to improve the set flattening optimizer so that it can run at any point
-        this.optimizers = builder.build();
+        this.planningTimeOptimizers = builder.build();
+
+        // Add runtime cost-based optimizers
+        ImmutableList.Builder<PlanOptimizer> runtimeBuilder = ImmutableList.builder();
+        runtimeBuilder.add(new IterativeOptimizer(
+                ruleStats,
+                statsCalculator,
+                costCalculator,
+                ImmutableList.of(),
+                ImmutableSet.of(new RuntimeReorderJoinSides())));
+        this.runtimeOptimizers = runtimeBuilder.build();
     }
 
-    public List<PlanOptimizer> get()
+    public List<PlanOptimizer> getPlanningTimeOptimizers()
     {
-        return optimizers;
+        return planningTimeOptimizers;
+    }
+
+    public List<PlanOptimizer> getRuntimeOptimizers()
+    {
+        return runtimeOptimizers;
     }
 }

@@ -14,22 +14,22 @@
 package com.facebook.presto.sql.planner;
 
 import com.facebook.presto.Session;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.predicate.DiscreteValues;
+import com.facebook.presto.common.predicate.Domain;
+import com.facebook.presto.common.predicate.Marker;
+import com.facebook.presto.common.predicate.NullableValue;
+import com.facebook.presto.common.predicate.Range;
+import com.facebook.presto.common.predicate.Ranges;
+import com.facebook.presto.common.predicate.SortedRangeSet;
+import com.facebook.presto.common.predicate.TupleDomain;
+import com.facebook.presto.common.predicate.Utils;
+import com.facebook.presto.common.predicate.ValueSet;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.execution.warnings.WarningCollector;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.metadata.OperatorNotFoundException;
-import com.facebook.presto.spi.block.Block;
 import com.facebook.presto.spi.function.FunctionHandle;
-import com.facebook.presto.spi.predicate.DiscreteValues;
-import com.facebook.presto.spi.predicate.Domain;
-import com.facebook.presto.spi.predicate.Marker;
-import com.facebook.presto.spi.predicate.NullableValue;
-import com.facebook.presto.spi.predicate.Range;
-import com.facebook.presto.spi.predicate.Ranges;
-import com.facebook.presto.spi.predicate.SortedRangeSet;
-import com.facebook.presto.spi.predicate.TupleDomain;
-import com.facebook.presto.spi.predicate.Utils;
-import com.facebook.presto.spi.predicate.ValueSet;
-import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.sql.ExpressionUtils;
 import com.facebook.presto.sql.InterpretedFunctionInvoker;
 import com.facebook.presto.sql.analyzer.ExpressionAnalyzer;
@@ -655,7 +655,7 @@ public final class ExpressionDomainTranslator
         private Optional<Object> floorValue(Type fromType, Type toType, Object value)
         {
             return getSaturatedFloorCastOperator(fromType, toType)
-                    .map((operator) -> functionInvoker.invoke(operator, session.toConnectorSession(), value));
+                    .map((operator) -> functionInvoker.invoke(operator, session.getSqlFunctionProperties(), value));
         }
 
         private Optional<FunctionHandle> getSaturatedFloorCastOperator(Type fromType, Type toType)
@@ -671,7 +671,7 @@ public final class ExpressionDomainTranslator
         private int compareOriginalValueToCoerced(Type originalValueType, Object originalValue, Type coercedValueType, Object coercedValue)
         {
             FunctionHandle castToOriginalTypeOperator = metadata.getFunctionManager().lookupCast(CAST, coercedValueType.getTypeSignature(), originalValueType.getTypeSignature());
-            Object coercedValueInOriginalType = functionInvoker.invoke(castToOriginalTypeOperator, session.toConnectorSession(), coercedValue);
+            Object coercedValueInOriginalType = functionInvoker.invoke(castToOriginalTypeOperator, session.getSqlFunctionProperties(), coercedValue);
             Block originalValueBlock = Utils.nativeValueToBlock(originalValueType, originalValue);
             Block coercedValueBlock = Utils.nativeValueToBlock(originalValueType, coercedValueInOriginalType);
             return originalValueType.compareTo(originalValueBlock, 0, coercedValueBlock, 0);

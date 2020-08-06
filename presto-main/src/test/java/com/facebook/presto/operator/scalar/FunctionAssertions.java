@@ -14,8 +14,15 @@
 package com.facebook.presto.operator.scalar;
 
 import com.facebook.presto.Session;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.PageBuilder;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.function.SqlFunctionProperties;
+import com.facebook.presto.common.predicate.Utils;
+import com.facebook.presto.common.type.RowType;
+import com.facebook.presto.common.type.TimeZoneKey;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.execution.warnings.WarningCollector;
-import com.facebook.presto.metadata.BuiltInFunction;
 import com.facebook.presto.metadata.FunctionListBuilder;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.metadata.Split;
@@ -29,7 +36,7 @@ import com.facebook.presto.operator.SourceOperator;
 import com.facebook.presto.operator.SourceOperatorFactory;
 import com.facebook.presto.operator.project.CursorProcessor;
 import com.facebook.presto.operator.project.PageProcessor;
-import com.facebook.presto.operator.project.PageProjection;
+import com.facebook.presto.operator.project.PageProjectionWithOutputs;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ConnectorId;
 import com.facebook.presto.spi.ConnectorPageSource;
@@ -39,23 +46,17 @@ import com.facebook.presto.spi.ErrorCodeSupplier;
 import com.facebook.presto.spi.FixedPageSource;
 import com.facebook.presto.spi.HostAddress;
 import com.facebook.presto.spi.InMemoryRecordSet;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.PageBuilder;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.RecordPageSource;
 import com.facebook.presto.spi.RecordSet;
 import com.facebook.presto.spi.StandardErrorCode;
 import com.facebook.presto.spi.TableHandle;
-import com.facebook.presto.spi.block.Block;
 import com.facebook.presto.spi.connector.ConnectorTransactionHandle;
-import com.facebook.presto.spi.function.SqlFunctionProperties;
+import com.facebook.presto.spi.function.SqlFunction;
 import com.facebook.presto.spi.plan.PlanNodeId;
-import com.facebook.presto.spi.predicate.Utils;
 import com.facebook.presto.spi.relation.RowExpression;
 import com.facebook.presto.spi.relation.VariableReferenceExpression;
-import com.facebook.presto.spi.type.RowType;
-import com.facebook.presto.spi.type.TimeZoneKey;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.spi.schedule.NodeSelectionStrategy;
 import com.facebook.presto.split.PageSourceProvider;
 import com.facebook.presto.sql.analyzer.ExpressionAnalysis;
 import com.facebook.presto.sql.analyzer.FeaturesConfig;
@@ -117,18 +118,19 @@ import static com.facebook.presto.block.BlockAssertions.createRowBlock;
 import static com.facebook.presto.block.BlockAssertions.createSlicesBlock;
 import static com.facebook.presto.block.BlockAssertions.createStringsBlock;
 import static com.facebook.presto.block.BlockAssertions.createTimestampsWithTimezoneBlock;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.DateTimeEncoding.packDateTimeWithZone;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.TimestampWithTimeZoneType.TIMESTAMP_WITH_TIME_ZONE;
+import static com.facebook.presto.common.type.VarbinaryType.VARBINARY;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.facebook.presto.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
 import static com.facebook.presto.spi.StandardErrorCode.INVALID_CAST_ARGUMENT;
 import static com.facebook.presto.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
 import static com.facebook.presto.spi.StandardErrorCode.NUMERIC_VALUE_OUT_OF_RANGE;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.DateTimeEncoding.packDateTimeWithZone;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
-import static com.facebook.presto.spi.type.TimestampWithTimeZoneType.TIMESTAMP_WITH_TIME_ZONE;
-import static com.facebook.presto.spi.type.VarbinaryType.VARBINARY;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
+import static com.facebook.presto.spi.schedule.NodeSelectionStrategy.HARD_AFFINITY;
 import static com.facebook.presto.sql.ExpressionUtils.rewriteIdentifiersToSymbolReferences;
 import static com.facebook.presto.sql.ParsingUtil.createParsingOptions;
 import static com.facebook.presto.sql.analyzer.ExpressionAnalyzer.analyzeExpressions;
@@ -231,7 +233,7 @@ public final class FunctionAssertions
         return metadata;
     }
 
-    public FunctionAssertions addFunctions(List<? extends BuiltInFunction> functionInfos)
+    public FunctionAssertions addFunctions(List<? extends SqlFunction> functionInfos)
     {
         metadata.registerBuiltInFunctions(functionInfos);
         return this;
@@ -288,6 +290,13 @@ public final class FunctionAssertions
     public void executeProjectionWithFullEngine(String projection)
     {
         MaterializedResult result = runner.execute("SELECT " + projection);
+    }
+
+    protected <T> T selectSingleValue(String projection, Type expectedType, Class<T> clazz)
+    {
+        Object object = selectSingleValue(projection, expectedType, compiler);
+        assertEquals(object.getClass(), clazz);
+        return (T) object;
     }
 
     private Object selectSingleValue(String projection, Type expectedType, ExpressionCompiler compiler)
@@ -473,7 +482,7 @@ public final class FunctionAssertions
         int maxIterationCount = 0;
         for (int iterationCount = 0; iterationCount < Math.max(1000, maxIterationCount * 4); iterationCount++) {
             Iterator<Optional<Page>> output = processor.process(
-                    session.toConnectorSession(),
+                    session.getSqlFunctionProperties(),
                     new DriverYieldSignal(),
                     newSimpleAggregatedMemoryContext().newLocalMemoryContext(PageProcessor.class.getSimpleName()),
                     SOURCE_PAGE);
@@ -494,9 +503,9 @@ public final class FunctionAssertions
         }
     }
 
-    private long getRetainedSizeOfCachedInstance(PageProjection projection)
+    private long getRetainedSizeOfCachedInstance(PageProjectionWithOutputs projection)
     {
-        Field[] fields = projection.getClass().getDeclaredFields();
+        Field[] fields = projection.getPageProjection().getClass().getDeclaredFields();
         long retainedSize = 0;
         for (Field field : fields) {
             field.setAccessible(true);
@@ -659,7 +668,7 @@ public final class FunctionAssertions
         Block block = output.getBlock(0);
         assertEquals(block.getPositionCount(), 1);
 
-        return type.getObjectValue(session.toConnectorSession(), block, 0);
+        return type.getObjectValue(session.getSqlFunctionProperties(), block, 0);
     }
 
     public void assertFilter(String filter, boolean expected, boolean withNoInputColumns)
@@ -905,7 +914,7 @@ public final class FunctionAssertions
         // convert result from stack type to Type ObjectValue
         Block block = Utils.nativeValueToBlock(expectedType, result);
 
-        return expectedType.getObjectValue(session.toConnectorSession(), block, 0);
+        return expectedType.getObjectValue(session.getSqlFunctionProperties(), block, 0);
     }
 
     private static OperatorFactory compileFilterWithNoInputColumns(SqlFunctionProperties sqlFunctionProperties, RowExpression filter, ExpressionCompiler compiler)
@@ -965,6 +974,7 @@ public final class FunctionAssertions
                             Optional.empty()),
                     ImmutableList.of(),
                     ImmutableList.of(projection.getType()),
+                    Optional.empty(),
                     new DataSize(0, BYTE),
                     0);
         }
@@ -1130,13 +1140,13 @@ public final class FunctionAssertions
         }
 
         @Override
-        public boolean isRemotelyAccessible()
+        public NodeSelectionStrategy getNodeSelectionStrategy()
         {
-            return false;
+            return HARD_AFFINITY;
         }
 
         @Override
-        public List<HostAddress> getAddresses()
+        public List<HostAddress> getPreferredNodes(List<HostAddress> sortedCandidates)
         {
             return ImmutableList.of();
         }

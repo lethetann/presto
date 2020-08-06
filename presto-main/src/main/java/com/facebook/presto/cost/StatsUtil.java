@@ -14,22 +14,22 @@
 package com.facebook.presto.cost;
 
 import com.facebook.presto.Session;
+import com.facebook.presto.common.type.BigintType;
+import com.facebook.presto.common.type.BooleanType;
+import com.facebook.presto.common.type.DateType;
+import com.facebook.presto.common.type.DecimalType;
+import com.facebook.presto.common.type.DoubleType;
+import com.facebook.presto.common.type.IntegerType;
+import com.facebook.presto.common.type.RealType;
+import com.facebook.presto.common.type.SmallintType;
+import com.facebook.presto.common.type.TinyintType;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.metadata.FunctionManager;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.function.FunctionHandle;
 import com.facebook.presto.spi.statistics.ColumnStatistics;
 import com.facebook.presto.spi.statistics.TableStatistics;
-import com.facebook.presto.spi.type.BigintType;
-import com.facebook.presto.spi.type.BooleanType;
-import com.facebook.presto.spi.type.DateType;
-import com.facebook.presto.spi.type.DecimalType;
-import com.facebook.presto.spi.type.DoubleType;
-import com.facebook.presto.spi.type.IntegerType;
-import com.facebook.presto.spi.type.RealType;
-import com.facebook.presto.spi.type.SmallintType;
-import com.facebook.presto.spi.type.TinyintType;
-import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.sql.InterpretedFunctionInvoker;
 
 import java.util.OptionalDouble;
@@ -55,7 +55,7 @@ final class StatsUtil
             InterpretedFunctionInvoker functionInvoker = new InterpretedFunctionInvoker(functionManager);
             FunctionHandle cast = functionManager.lookupCast(CAST, type.getTypeSignature(), DoubleType.DOUBLE.getTypeSignature());
 
-            return OptionalDouble.of((double) functionInvoker.invoke(cast, session, singletonList(value)));
+            return OptionalDouble.of((double) functionInvoker.invoke(cast, session.getSqlFunctionProperties(), singletonList(value)));
         }
 
         if (DateType.DATE.equals(type)) {

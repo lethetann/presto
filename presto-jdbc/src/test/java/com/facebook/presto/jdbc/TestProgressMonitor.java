@@ -17,7 +17,7 @@ import com.facebook.airlift.json.JsonCodec;
 import com.facebook.presto.client.Column;
 import com.facebook.presto.client.QueryResults;
 import com.facebook.presto.client.StatementStats;
-import com.facebook.presto.spi.type.BigintType;
+import com.facebook.presto.common.type.BigintType;
 import com.google.common.collect.ImmutableList;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
@@ -89,7 +89,7 @@ public class TestProgressMonitor
                 nextUriId == null ? null : server.url(format("/v1/statement/%s/%s", queryId, nextUriId)).uri(),
                 responseColumns,
                 data,
-                new StatementStats(state, state.equals("QUEUED"), true, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, null),
+                new StatementStats(state, state.equals("QUEUED"), true, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, null),
                 null,
                 ImmutableList.of(),
                 null,

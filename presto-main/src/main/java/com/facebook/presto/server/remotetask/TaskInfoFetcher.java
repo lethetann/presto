@@ -108,7 +108,7 @@ public class TaskInfoFetcher
         requireNonNull(initialTask, "initialTask is null");
         requireNonNull(errorScheduledExecutor, "errorScheduledExecutor is null");
 
-        this.taskId = initialTask.getTaskStatus().getTaskId();
+        this.taskId = initialTask.getTaskId();
         this.onFail = requireNonNull(onFail, "onFail is null");
         this.taskInfo = new StateMachine<>("task " + taskId, executor, initialTask);
         this.finalTaskInfo = new StateMachine<>("task-" + taskId, executor, Optional.empty());
@@ -146,7 +146,8 @@ public class TaskInfoFetcher
     {
         running = false;
         if (future != null) {
-            future.cancel(true);
+            // do not terminate if the request is already running to avoid closing pooled connections
+            future.cancel(false);
             future = null;
         }
         if (scheduledFuture != null) {
