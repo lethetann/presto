@@ -36,6 +36,7 @@ import com.facebook.presto.spi.session.PropertyMetadata;
 import com.google.common.base.Splitter;
 import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Sets;
 import io.airlift.units.DataSize;
@@ -67,9 +68,11 @@ import static com.facebook.presto.hive.HiveErrorCode.HIVE_PATH_ALREADY_EXISTS;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_UNSUPPORTED_FORMAT;
 import static com.facebook.presto.hive.HiveSessionProperties.getSortedWriteTempPathSubdirectoryCount;
 import static com.facebook.presto.hive.HiveSessionProperties.isFailFastOnInsertIntoImmutablePartitionsEnabled;
+import static com.facebook.presto.hive.HiveSessionProperties.isFileRenamingEnabled;
 import static com.facebook.presto.hive.HiveSessionProperties.isSortedWriteToTempPathEnabled;
 import static com.facebook.presto.hive.HiveType.toHiveTypes;
 import static com.facebook.presto.hive.HiveWriteUtils.checkPartitionIsWritable;
+import static com.facebook.presto.hive.LocationHandle.TableType.TEMPORARY;
 import static com.facebook.presto.hive.LocationHandle.WriteMode.DIRECT_TO_TARGET_EXISTING_DIRECTORY;
 import static com.facebook.presto.hive.PartitionUpdate.FileWriteInfo;
 import static com.facebook.presto.hive.metastore.MetastoreUtil.createPartitionValues;
@@ -112,6 +115,7 @@ public class HiveWriterFactory
     private final HiveStorageFormat tableStorageFormat;
     private final HiveStorageFormat partitionStorageFormat;
     private final HiveCompressionCodec compressionCodec;
+    private final Map<String, String> additionalTableParameters;
     private final LocationHandle locationHandle;
     private final LocationService locationService;
     private final String filePrefix;
@@ -148,6 +152,7 @@ public class HiveWriterFactory
             HiveStorageFormat tableStorageFormat,
             HiveStorageFormat partitionStorageFormat,
             HiveCompressionCodec compressionCodec,
+            Map<String, String> additionalTableParameters,
             OptionalInt bucketCount,
             List<SortingColumn> sortedBy,
             LocationHandle locationHandle,
@@ -176,6 +181,7 @@ public class HiveWriterFactory
         this.tableStorageFormat = requireNonNull(tableStorageFormat, "tableStorageFormat is null");
         this.partitionStorageFormat = requireNonNull(partitionStorageFormat, "partitionStorageFormat is null");
         this.compressionCodec = requireNonNull(compressionCodec, "compressionCodec is null");
+        this.additionalTableParameters = ImmutableMap.copyOf(requireNonNull(additionalTableParameters, "additionalTableParameters is null"));
         this.locationHandle = requireNonNull(locationHandle, "locationHandle is null");
         this.locationService = requireNonNull(locationService, "locationService is null");
         this.filePrefix = requireNonNull(filePrefix, "filePrefix is null");
@@ -319,13 +325,16 @@ public class HiveWriterFactory
         }
 
         WriterParameters writerParameters = getWriterParameters(partitionName, bucketNumber);
+        Properties schema = writerParameters.getSchema();
+        schema.putAll(additionalTableParameters);
 
         validateSchema(partitionName, writerParameters.getSchema());
 
         String extension = getFileExtension(writerParameters.getOutputStorageFormat(), compressionCodec);
         String targetFileName;
         if (bucketNumber.isPresent()) {
-            targetFileName = computeBucketedFileName(filePrefix, bucketNumber.getAsInt()) + extension;
+            // Use the bucket number for file name when fileRenaming is enabled
+            targetFileName = isFileRenamingEnabled(session) ? String.valueOf(bucketNumber.getAsInt()) : computeBucketedFileName(filePrefix, bucketNumber.getAsInt()) + extension;
         }
         else {
             targetFileName = filePrefix + "_" + randomUUID() + extension;
@@ -349,7 +358,7 @@ public class HiveWriterFactory
                             .map(DataColumn::getName)
                             .collect(toList()),
                     writerParameters.getOutputStorageFormat(),
-                    writerParameters.getSchema(),
+                    schema,
                     conf,
                     session,
                     encryptionInformation);
@@ -366,7 +375,7 @@ public class HiveWriterFactory
                             .map(DataColumn::getName)
                             .collect(toList()),
                     writerParameters.getOutputStorageFormat(),
-                    writerParameters.getSchema(),
+                    schema,
                     partitionStorageFormat.getEstimatedWriterSystemMemoryUsage(),
                     conf,
                     typeManager,
@@ -383,6 +392,8 @@ public class HiveWriterFactory
                     writerParameters.getWriteInfo().getTempPath());
         }
 
+        boolean writeTempData = locationHandle.getTableType() == TEMPORARY || locationHandle.getTempPath().isPresent() || writeToTempFile;
+
         return new HiveWriter(
                 hiveFileWriter,
                 partitionName,
@@ -391,7 +402,8 @@ public class HiveWriterFactory
                 writerParameters.getWriteInfo().getWritePath().toString(),
                 writerParameters.getWriteInfo().getTargetPath().toString(),
                 createCommitEventListener(path, partitionName, hiveFileWriter, writerParameters),
-                hiveWriterStats);
+                hiveWriterStats,
+                writeTempData);
     }
 
     private WriterParameters getWriterParameters(Optional<String> partitionName, OptionalInt bucketNumber)

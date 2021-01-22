@@ -14,7 +14,6 @@
 package com.facebook.presto.spi.eventlistener;
 
 import java.time.Duration;
-import java.util.List;
 import java.util.Optional;
 
 import static java.util.Objects.requireNonNull;
@@ -33,6 +32,7 @@ public class QueryStatistics
     private final long peakTotalNonRevocableMemoryBytes;
     private final long peakTaskUserMemory;
     private final long peakTaskTotalMemory;
+    private final long peakNodeTotalMemory;
     private final long totalBytes;
     private final long totalRows;
     private final long outputBytes;
@@ -44,15 +44,8 @@ public class QueryStatistics
 
     private final double cumulativeMemory;
 
-    private final List<StageGcStatistics> stageGcStatistics;
-
     private final int completedSplits;
     private final boolean complete;
-
-    private final List<ResourceDistribution> cpuTimeDistribution;
-    private final List<ResourceDistribution> peakMemoryDistribution;
-
-    private final List<String> operatorSummaries;
 
     public QueryStatistics(
             Duration cpuTime,
@@ -65,6 +58,7 @@ public class QueryStatistics
             long peakTotalNonRevocableMemoryBytes,
             long peakTaskUserMemory,
             long peakTaskTotalMemory,
+            long peakNodeTotalMemory,
             long totalBytes,
             long totalRows,
             long outputBytes,
@@ -74,12 +68,8 @@ public class QueryStatistics
             long writtenIntermediateBytes,
             long spilledBytes,
             double cumulativeMemory,
-            List<StageGcStatistics> stageGcStatistics,
             int completedSplits,
-            boolean complete,
-            List<ResourceDistribution> cpuTimeDistribution,
-            List<ResourceDistribution> peakMemoryDistribution,
-            List<String> operatorSummaries)
+            boolean complete)
     {
         this.cpuTime = requireNonNull(cpuTime, "cpuTime is null");
         this.retriedCpuTime = requireNonNull(retriedCpuTime, "retriedCpuTime is null");
@@ -91,6 +81,7 @@ public class QueryStatistics
         this.peakTotalNonRevocableMemoryBytes = peakTotalNonRevocableMemoryBytes;
         this.peakTaskUserMemory = peakTaskUserMemory;
         this.peakTaskTotalMemory = peakTaskTotalMemory;
+        this.peakNodeTotalMemory = peakNodeTotalMemory;
         this.totalBytes = totalBytes;
         this.totalRows = totalRows;
         this.outputBytes = outputBytes;
@@ -100,12 +91,8 @@ public class QueryStatistics
         this.writtenIntermediateBytes = writtenIntermediateBytes;
         this.spilledBytes = spilledBytes;
         this.cumulativeMemory = cumulativeMemory;
-        this.stageGcStatistics = requireNonNull(stageGcStatistics, "stageGcStatistics is null");
         this.completedSplits = completedSplits;
         this.complete = complete;
-        this.cpuTimeDistribution = requireNonNull(cpuTimeDistribution, "cpuTimeDistribution is null");
-        this.peakMemoryDistribution = requireNonNull(peakMemoryDistribution, "peakMemoryDistribution is null");
-        this.operatorSummaries = requireNonNull(operatorSummaries, "operatorSummaries is null");
     }
 
     public Duration getCpuTime()
@@ -158,6 +145,11 @@ public class QueryStatistics
         return peakTaskUserMemory;
     }
 
+    public long getPeakNodeTotalMemory()
+    {
+        return peakNodeTotalMemory;
+    }
+
     public long getTotalBytes()
     {
         return totalBytes;
@@ -203,11 +195,6 @@ public class QueryStatistics
         return cumulativeMemory;
     }
 
-    public List<StageGcStatistics> getStageGcStatistics()
-    {
-        return stageGcStatistics;
-    }
-
     public int getCompletedSplits()
     {
         return completedSplits;
@@ -216,20 +203,5 @@ public class QueryStatistics
     public boolean isComplete()
     {
         return complete;
-    }
-
-    public List<ResourceDistribution> getCpuTimeDistribution()
-    {
-        return cpuTimeDistribution;
-    }
-
-    public List<ResourceDistribution> getPeakMemoryDistribution()
-    {
-        return peakMemoryDistribution;
-    }
-
-    public List<String> getOperatorSummaries()
-    {
-        return operatorSummaries;
     }
 }

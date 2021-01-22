@@ -36,11 +36,11 @@ import java.util.OptionalLong;
 import java.util.concurrent.ThreadLocalRandom;
 
 import static com.facebook.presto.spark.PrestoSparkSessionProperties.MAX_SPLITS_DATA_SIZE_PER_SPARK_PARTITION;
+import static com.facebook.presto.spark.PrestoSparkSessionProperties.MIN_SPARK_INPUT_PARTITION_COUNT_FOR_AUTO_TUNE;
 import static com.facebook.presto.spark.PrestoSparkSessionProperties.SPARK_INITIAL_PARTITION_COUNT;
 import static com.facebook.presto.spark.PrestoSparkSessionProperties.SPARK_PARTITION_COUNT_AUTO_TUNE_ENABLED;
 import static com.facebook.presto.spark.planner.PrestoSparkRddFactory.assignSourceDistributionSplits;
 import static com.google.common.collect.Multimaps.asMap;
-import static java.lang.String.format;
 import static java.util.stream.Collectors.toList;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertTrue;
@@ -126,6 +126,11 @@ public class TestPrestoSparkAbstractTestQueries
     }
 
     @Override
+    public void testExecuteUsingWithDifferentDatatypes()
+    {
+        // prepared statement is not supported by Presto on Spark
+    }
+
     public void testExecuteUsingComplexJoinCriteria()
     {
         // prepared statement is not supported by Presto on Spark
@@ -137,7 +142,6 @@ public class TestPrestoSparkAbstractTestQueries
         // prepared statement is not supported by Presto on Spark
     }
 
-    @Override
     public void testExecuteUsingWithSubqueryInJoin()
     {
         // prepared statement is not supported by Presto on Spark
@@ -145,6 +149,30 @@ public class TestPrestoSparkAbstractTestQueries
 
     @Override
     public void testExecuteWithParametersInGroupBy()
+    {
+        // prepared statement is not supported by Presto on Spark
+    }
+
+    @Override
+    public void testExecuteUsingFunction()
+    {
+        // prepared statement is not supported by Presto on Spark
+    }
+
+    @Override
+    public void testExecuteUsingSubqueryFails()
+    {
+        // prepared statement is not supported by Presto on Spark
+    }
+
+    @Override
+    public void testExecuteUsingSelectStarFails()
+    {
+        // prepared statement is not supported by Presto on Spark
+    }
+
+    @Override
+    public void testExecuteUsingColumnReferenceFails()
     {
         // prepared statement is not supported by Presto on Spark
     }
@@ -255,6 +283,7 @@ public class TestPrestoSparkAbstractTestQueries
                 .setSystemProperty(SPARK_PARTITION_COUNT_AUTO_TUNE_ENABLED, Boolean.toString(autoTunePartitionCount))
                 .setSystemProperty(SPARK_INITIAL_PARTITION_COUNT, "3")
                 .setSystemProperty(MAX_SPLITS_DATA_SIZE_PER_SPARK_PARTITION, maxPartitionSize + "B")
+                .setSystemProperty(MIN_SPARK_INPUT_PARTITION_COUNT_FOR_AUTO_TUNE, "1")
                 .build();
 
         List<ScheduledSplit> splits = new ArrayList<>();
@@ -274,7 +303,6 @@ public class TestPrestoSparkAbstractTestQueries
                     long totalPartitionSize = scheduledSplits.stream()
                             .mapToLong(split -> split.getSplit().getConnectorSplit().getSplitSizeInBytes().getAsLong())
                             .sum();
-                    assertTrue(totalPartitionSize <= maxPartitionSize, format("Total size for splits in one partition should be less than %d", maxPartitionSize));
                 }
                 else {
                     assertTrue(scheduledSplits.size() == 1, "A partition should hold at least one split");

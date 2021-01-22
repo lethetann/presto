@@ -18,7 +18,6 @@ import com.facebook.presto.Session;
 import com.facebook.presto.common.type.Type;
 import com.facebook.presto.execution.QueryExecution.QueryOutputInfo;
 import com.facebook.presto.execution.StateMachine.StateChangeListener;
-import com.facebook.presto.execution.warnings.WarningCollector;
 import com.facebook.presto.memory.VersionedMemoryPoolId;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.security.AccessControl;
@@ -27,6 +26,7 @@ import com.facebook.presto.server.BasicQueryStats;
 import com.facebook.presto.spi.ErrorCode;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.QueryId;
+import com.facebook.presto.spi.WarningCollector;
 import com.facebook.presto.spi.resourceGroups.QueryType;
 import com.facebook.presto.spi.resourceGroups.ResourceGroupId;
 import com.facebook.presto.spi.security.SelectedRole;
@@ -111,6 +111,7 @@ public class QueryStateMachine
 
     private final AtomicLong peakTaskUserMemory = new AtomicLong();
     private final AtomicLong peakTaskTotalMemory = new AtomicLong();
+    private final AtomicLong peakNodeTotalMemory = new AtomicLong();
 
     private final AtomicInteger currentRunningTaskCount = new AtomicInteger();
     private final AtomicInteger peakRunningTaskCount = new AtomicInteger();
@@ -275,6 +276,11 @@ public class QueryStateMachine
         return peakTaskUserMemory.get();
     }
 
+    public long getPeakNodeTotalMemory()
+    {
+        return peakNodeTotalMemory.get();
+    }
+
     public int getCurrentRunningTaskCount()
     {
         return currentRunningTaskCount.get();
@@ -302,7 +308,12 @@ public class QueryStateMachine
         return warningCollector;
     }
 
-    public void updateMemoryUsage(long deltaUserMemoryInBytes, long deltaTotalMemoryInBytes, long taskUserMemoryInBytes, long taskTotalMemoryInBytes)
+    public void updateMemoryUsage(
+            long deltaUserMemoryInBytes,
+            long deltaTotalMemoryInBytes,
+            long taskUserMemoryInBytes,
+            long taskTotalMemoryInBytes,
+            long peakNodeTotalMemoryInBytes)
     {
         currentUserMemory.addAndGet(deltaUserMemoryInBytes);
         currentTotalMemory.addAndGet(deltaTotalMemoryInBytes);
@@ -310,6 +321,7 @@ public class QueryStateMachine
         peakTotalMemory.updateAndGet(currentPeakValue -> Math.max(currentTotalMemory.get(), currentPeakValue));
         peakTaskUserMemory.accumulateAndGet(taskUserMemoryInBytes, Math::max);
         peakTaskTotalMemory.accumulateAndGet(taskTotalMemoryInBytes, Math::max);
+        peakNodeTotalMemory.accumulateAndGet(peakNodeTotalMemoryInBytes, Math::max);
     }
 
     public BasicQueryInfo getBasicQueryInfo(Optional<BasicStageExecutionStats> rootStage)
@@ -319,14 +331,6 @@ public class QueryStateMachine
         // information, the query could finish, and the task states would
         // never be visible.
         QueryState state = queryState.get();
-
-        ErrorCode errorCode = null;
-        if (state == QueryState.FAILED) {
-            ExecutionFailureInfo failureCause = this.failureCause.get();
-            if (failureCause != null) {
-                errorCode = failureCause.getErrorCode();
-            }
-        }
 
         BasicStageExecutionStats stageStats = rootStage.orElse(EMPTY_STAGE_STATS);
         BasicQueryStats queryStats = new BasicQueryStats(
@@ -352,6 +356,7 @@ public class QueryStateMachine
                 succinctBytes(getPeakUserMemoryInBytes()),
                 succinctBytes(getPeakTotalMemoryInBytes()),
                 succinctBytes(getPeakTaskTotalMemory()),
+                succinctBytes(getPeakNodeTotalMemory()),
 
                 stageStats.getTotalCpuTime(),
                 stageStats.getTotalScheduledTime(),
@@ -373,8 +378,7 @@ public class QueryStateMachine
                 self,
                 query,
                 queryStats,
-                errorCode == null ? null : errorCode.getType(),
-                errorCode,
+                failureCause.get(),
                 queryType,
                 warningCollector.getWarnings());
     }
@@ -455,7 +459,8 @@ public class QueryStateMachine
                 succinctBytes(getPeakUserMemoryInBytes()),
                 succinctBytes(getPeakTotalMemoryInBytes()),
                 succinctBytes(getPeakTaskUserMemory()),
-                succinctBytes(getPeakTaskTotalMemory()));
+                succinctBytes(getPeakTaskTotalMemory()),
+                succinctBytes(getPeakNodeTotalMemory()));
     }
 
     public VersionedMemoryPoolId getMemoryPool()
@@ -916,6 +921,7 @@ public class QueryStateMachine
                 queryStats.getPeakTotalMemoryReservation(),
                 queryStats.getPeakTaskUserMemory(),
                 queryStats.getPeakTaskTotalMemory(),
+                queryStats.getPeakNodeTotalMemory(),
                 queryStats.isScheduled(),
                 queryStats.getTotalScheduledTime(),
                 queryStats.getTotalCpuTime(),

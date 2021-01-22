@@ -49,7 +49,7 @@ public final class QueryResourceUtil
 {
     private QueryResourceUtil() {}
 
-    public static Response toResponse(Query query, QueryResults queryResults)
+    public static Response toResponse(Query query, QueryResults queryResults, boolean compressionEnabled)
     {
         Response.ResponseBuilder response = Response.ok(queryResults);
 
@@ -88,6 +88,10 @@ public final class QueryResourceUtil
         // add clear transaction ID directive
         if (query.isClearTransactionId()) {
             response.header(PRESTO_CLEAR_TRANSACTION_ID, true);
+        }
+
+        if (!compressionEnabled) {
+            response.encoding("identity");
         }
 
         return response.build();
@@ -131,7 +135,7 @@ public final class QueryResourceUtil
         }
     }
 
-    private static Set<String> globalUniqueNodes(StageInfo stageInfo)
+    public static Set<String> globalUniqueNodes(StageInfo stageInfo)
     {
         if (stageInfo == null) {
             return ImmutableSet.of();

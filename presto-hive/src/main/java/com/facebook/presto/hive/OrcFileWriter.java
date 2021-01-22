@@ -18,8 +18,8 @@ import com.facebook.presto.common.Page;
 import com.facebook.presto.common.block.Block;
 import com.facebook.presto.common.block.BlockBuilder;
 import com.facebook.presto.common.block.RunLengthEncodedBlock;
+import com.facebook.presto.common.io.DataSink;
 import com.facebook.presto.common.type.Type;
-import com.facebook.presto.orc.DataSink;
 import com.facebook.presto.orc.DwrfEncryptionProvider;
 import com.facebook.presto.orc.DwrfWriterEncryption;
 import com.facebook.presto.orc.OrcDataSource;
@@ -127,6 +127,12 @@ public class OrcFileWriter
     }
 
     @Override
+    public long getFileSizeInBytes()
+    {
+        return orcWriter.getWrittenBytes();
+    }
+
+    @Override
     public long getSystemMemoryUsage()
     {
         return INSTANCE_SIZE + orcWriter.getRetainedBytes();
@@ -184,7 +190,7 @@ public class OrcFileWriter
             }
         }
 
-        return Optional.of(createFileStatisticsPage(getWrittenBytes(), rowCount));
+        return Optional.of(createFileStatisticsPage(getFileSizeInBytes(), rowCount));
     }
 
     @Override

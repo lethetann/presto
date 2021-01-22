@@ -15,7 +15,6 @@ package com.facebook.presto.operator;
 
 import com.facebook.presto.common.Page;
 import com.facebook.presto.common.PageBuilder;
-import com.facebook.presto.common.block.Block;
 import com.facebook.presto.common.block.SortOrder;
 import com.facebook.presto.common.type.Type;
 import com.facebook.presto.memory.context.LocalMemoryContext;
@@ -45,8 +44,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiPredicate;
 import java.util.stream.Stream;
 
-import static com.facebook.airlift.concurrent.MoreFutures.checkSuccess;
 import static com.facebook.presto.common.block.SortOrder.ASC_NULLS_LAST;
+import static com.facebook.presto.operator.SpillingUtils.checkSpillSucceeded;
 import static com.facebook.presto.operator.WorkProcessor.TransformationState.needsMoreData;
 import static com.facebook.presto.util.MergeSortedPages.mergeSortedPages;
 import static com.google.common.base.Preconditions.checkArgument;
@@ -706,7 +705,7 @@ public class WindowOperator
                 return;
             }
 
-            checkSuccess(spillInProgress.get(), "spilling failed");
+            checkSpillSucceeded(spillInProgress.get());
             spillInProgress = Optional.empty();
 
             // No memory to reclaim
@@ -761,12 +760,12 @@ public class WindowOperator
         checkArgument(page.getPositionCount() > startPosition);
 
         // TODO: Fix pagesHashStrategy to allow specifying channels for comparison, it currently requires us to rearrange the right side blocks in consecutive channel order
-        Page preGroupedPage = rearrangePage(page, pagesIndexWithHashStrategies.preGroupedPartitionChannels);
+        Page preGroupedPage = page.extractChannels(pagesIndexWithHashStrategies.preGroupedPartitionChannels);
 
         PagesIndex pagesIndex = pagesIndexWithHashStrategies.pagesIndex;
         PagesHashStrategy preGroupedPartitionHashStrategy = pagesIndexWithHashStrategies.preGroupedPartitionHashStrategy;
         if (currentSpillGroupRowPage.isPresent()) {
-            if (!preGroupedPartitionHashStrategy.rowEqualsRow(0, rearrangePage(currentSpillGroupRowPage.get(), pagesIndexWithHashStrategies.preGroupedPartitionChannels), startPosition, preGroupedPage)) {
+            if (!preGroupedPartitionHashStrategy.rowEqualsRow(0, currentSpillGroupRowPage.get().extractChannels(pagesIndexWithHashStrategies.preGroupedPartitionChannels), startPosition, preGroupedPage)) {
                 return startPosition;
             }
         }
@@ -791,15 +790,6 @@ public class WindowOperator
             // We had previous results buffered, but the remaining page starts with new group values
             return startPosition;
         }
-    }
-
-    private static Page rearrangePage(Page page, int[] channels)
-    {
-        Block[] newBlocks = new Block[channels.length];
-        for (int i = 0; i < channels.length; i++) {
-            newBlocks[i] = page.getBlock(channels[i]);
-        }
-        return new Page(page.getPositionCount(), newBlocks);
     }
 
     private void sortPagesIndexIfNecessary(PagesIndexWithHashStrategies pagesIndexWithHashStrategies, List<Integer> orderChannels, List<SortOrder> ordering)
@@ -834,8 +824,8 @@ public class WindowOperator
 
     /**
      * @param startPosition - inclusive
-     * @param endPosition - exclusive
-     * @param comparator - returns true if positions given as parameters are equal
+     * @param endPosition   - exclusive
+     * @param comparator    - returns true if positions given as parameters are equal
      * @return the end of the group position exclusive (the position the very next group starts)
      */
     @VisibleForTesting

@@ -13,7 +13,7 @@
  */
 package com.facebook.presto.sql.planner.plan;
 
-import com.facebook.presto.metadata.FunctionManager;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
 import com.facebook.presto.spi.plan.PlanNode;
 import com.facebook.presto.spi.plan.PlanNodeId;
 import com.facebook.presto.spi.relation.RowExpression;
@@ -27,6 +27,7 @@ import com.google.common.collect.ImmutableSet;
 
 import javax.annotation.concurrent.Immutable;
 
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -49,7 +50,7 @@ import static java.util.Objects.requireNonNull;
 
 @Immutable
 public class JoinNode
-        extends InternalPlanNode
+        extends AbstractJoinNode
 {
     private final Type type;
     private final PlanNode left;
@@ -124,7 +125,11 @@ public class JoinNode
         }
 
         for (VariableReferenceExpression variableReferenceExpression : dynamicFilters.values()) {
-            checkArgument(right.getOutputVariables().contains(variableReferenceExpression), "Right join input doesn't contain symbol for dynamic filter: %s", variableReferenceExpression);
+            checkArgument(right.getOutputVariables().contains(variableReferenceExpression), format(
+                    "Right join input doesn't contain symbol for dynamic filter: %s, rightVariables: %s, dynamicFilters.values(): %s",
+                    variableReferenceExpression,
+                    Arrays.toString(right.getOutputVariables().toArray()),
+                    Arrays.toString(dynamicFilters.values().toArray())));
         }
     }
 
@@ -231,8 +236,20 @@ public class JoinNode
         return left;
     }
 
+    @Override
+    public PlanNode getProbe()
+    {
+        return left;
+    }
+
     @JsonProperty
     public PlanNode getRight()
+    {
+        return right;
+    }
+
+    @Override
+    public PlanNode getBuild()
     {
         return right;
     }
@@ -249,10 +266,10 @@ public class JoinNode
         return filter;
     }
 
-    public Optional<SortExpressionContext> getSortExpressionContext(FunctionManager functionManager)
+    public Optional<SortExpressionContext> getSortExpressionContext(FunctionAndTypeManager functionAndTypeManager)
     {
         return filter
-                .flatMap(filter -> extractSortExpression(ImmutableSet.copyOf(right.getOutputVariables()), filter, functionManager));
+                .flatMap(filter -> extractSortExpression(ImmutableSet.copyOf(right.getOutputVariables()), filter, functionAndTypeManager));
     }
 
     @JsonProperty
@@ -286,6 +303,7 @@ public class JoinNode
         return distributionType;
     }
 
+    @Override
     @JsonProperty
     public Map<String, VariableReferenceExpression> getDynamicFilters()
     {

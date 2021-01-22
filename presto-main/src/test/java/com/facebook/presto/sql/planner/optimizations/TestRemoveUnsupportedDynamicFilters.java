@@ -14,11 +14,11 @@
 package com.facebook.presto.sql.planner.optimizations;
 
 import com.facebook.presto.cost.StatsAndCosts;
-import com.facebook.presto.execution.warnings.WarningCollector;
 import com.facebook.presto.expressions.LogicalRowExpressions;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.spi.ConnectorId;
 import com.facebook.presto.spi.TableHandle;
+import com.facebook.presto.spi.WarningCollector;
 import com.facebook.presto.spi.plan.PlanNode;
 import com.facebook.presto.spi.plan.PlanNodeIdAllocator;
 import com.facebook.presto.spi.plan.TableScanNode;
@@ -47,6 +47,7 @@ import org.testng.annotations.Test;
 import java.util.Optional;
 
 import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.sql.ExpressionUtils.combineDisjuncts;
 import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.equiJoinClause;
 import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.filter;
 import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.join;
@@ -73,9 +74,9 @@ public class TestRemoveUnsupportedDynamicFilters
     {
         metadata = getQueryRunner().getMetadata();
         logicalRowExpressions = new LogicalRowExpressions(
-                new RowExpressionDeterminismEvaluator(metadata.getFunctionManager()),
-                new FunctionResolution(metadata.getFunctionManager()),
-                metadata.getFunctionManager());
+                new RowExpressionDeterminismEvaluator(metadata.getFunctionAndTypeManager()),
+                new FunctionResolution(metadata.getFunctionAndTypeManager()),
+                metadata.getFunctionAndTypeManager());
         builder = new PlanBuilder(getQueryRunner().getDefaultSession(), new PlanNodeIdAllocator(), metadata);
         ConnectorId connectorId = getCurrentConnectorId();
         TableHandle lineitemTableHandle = new TableHandle(
@@ -123,10 +124,10 @@ public class TestRemoveUnsupportedDynamicFilters
         PlanNode root = builder.join(
                 INNER,
                 builder.filter(
-                        createDynamicFilterExpression("DF", ordersOrderKeyVariable, metadata.getFunctionManager()),
+                        createDynamicFilterExpression("DF", ordersOrderKeyVariable, metadata.getFunctionAndTypeManager()),
                         ordersTableScanNode),
                 builder.filter(
-                        createDynamicFilterExpression("DF", ordersOrderKeyVariable, metadata.getFunctionManager()),
+                        createDynamicFilterExpression("DF", ordersOrderKeyVariable, metadata.getFunctionAndTypeManager()),
                         lineitemTableScanNode),
                 ImmutableList.of(new JoinNode.EquiJoinClause(ordersOrderKeyVariable, lineitemOrderKeyVariable)),
                 ImmutableList.of(ordersOrderKeyVariable),
@@ -153,7 +154,7 @@ public class TestRemoveUnsupportedDynamicFilters
                         builder.filter(
                                 logicalRowExpressions.combineConjuncts(
                                         builder.rowExpression("LINEITEM_OK > 0"),
-                                        createDynamicFilterExpression("DF", lineitemOrderKeyVariable, metadata.getFunctionManager())),
+                                        createDynamicFilterExpression("DF", lineitemOrderKeyVariable, metadata.getFunctionAndTypeManager())),
                                 lineitemTableScanNode),
                         ImmutableList.of(new JoinNode.EquiJoinClause(ordersOrderKeyVariable, lineitemOrderKeyVariable)),
                         ImmutableList.of(),
@@ -171,12 +172,80 @@ public class TestRemoveUnsupportedDynamicFilters
                                         tableScan("lineitem", ImmutableMap.of("LINEITEM_OK", "orderkey"))))));
     }
 
+    @Test
+    public void testNestedDynamicFilterDisjunctionRewrite()
+    {
+        PlanNode root = builder.output(
+                ImmutableList.of(),
+                ImmutableList.of(),
+                builder.join(
+                        INNER,
+                        ordersTableScanNode,
+                        builder.filter(
+                                logicalRowExpressions.combineConjuncts(
+                                        logicalRowExpressions.combineDisjuncts(
+                                                builder.rowExpression("LINEITEM_OK IS NULL"),
+                                                createDynamicFilterExpression("DF", lineitemOrderKeyVariable, metadata.getFunctionAndTypeManager())),
+                                        logicalRowExpressions.combineDisjuncts(
+                                                builder.rowExpression("LINEITEM_OK IS NOT NULL"),
+                                                createDynamicFilterExpression("DF", lineitemOrderKeyVariable, metadata.getFunctionAndTypeManager()))),
+                                lineitemTableScanNode),
+                        ImmutableList.of(new JoinNode.EquiJoinClause(ordersOrderKeyVariable, lineitemOrderKeyVariable)),
+                        ImmutableList.of(ordersOrderKeyVariable),
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.empty(),
+                        ImmutableMap.of()));
+        assertPlan(
+                removeUnsupportedDynamicFilters(root),
+                output(
+                        join(INNER,
+                                ImmutableList.of(equiJoinClause("ORDERS_OK", "LINEITEM_OK")),
+                                tableScan("orders", ImmutableMap.of("ORDERS_OK", "orderkey")),
+                                tableScan("lineitem", ImmutableMap.of("LINEITEM_OK", "orderkey")))));
+    }
+
+    @Test
+    public void testNestedDynamicFilterConjunctionRewrite()
+    {
+        PlanNode root = builder.output(ImmutableList.of(), ImmutableList.of(),
+                builder.join(
+                        INNER,
+                        ordersTableScanNode,
+                        builder.filter(
+                                logicalRowExpressions.combineDisjuncts(
+                                        logicalRowExpressions.combineConjuncts(
+                                                builder.rowExpression("LINEITEM_OK IS NULL"),
+                                                createDynamicFilterExpression("DF", lineitemOrderKeyVariable, metadata.getFunctionAndTypeManager())),
+                                        logicalRowExpressions.combineConjuncts(
+                                                builder.rowExpression("LINEITEM_OK IS NOT NULL"),
+                                                createDynamicFilterExpression("DF", lineitemOrderKeyVariable, metadata.getFunctionAndTypeManager()))),
+                                lineitemTableScanNode),
+                        ImmutableList.of(new JoinNode.EquiJoinClause(ordersOrderKeyVariable, lineitemOrderKeyVariable)),
+                        ImmutableList.of(ordersOrderKeyVariable),
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.empty(),
+                        ImmutableMap.of()));
+        assertPlan(
+                removeUnsupportedDynamicFilters(root),
+                output(
+                        join(INNER,
+                                ImmutableList.of(equiJoinClause("ORDERS_OK", "LINEITEM_OK")),
+                                tableScan("orders", ImmutableMap.of("ORDERS_OK", "orderkey")),
+                                filter(
+                                        combineDisjuncts(ImmutableList.of(
+                                                PlanBuilder.expression("LINEITEM_OK IS NULL"),
+                                                PlanBuilder.expression("LINEITEM_OK IS NOT NULL"))),
+                                        tableScan("lineitem", ImmutableMap.of("LINEITEM_OK", "orderkey"))))));
+    }
+
     PlanNode removeUnsupportedDynamicFilters(PlanNode root)
     {
         return getQueryRunner().inTransaction(session -> {
             // metadata.getCatalogHandle() registers the catalog for the transaction
             session.getCatalog().ifPresent(catalog -> metadata.getCatalogHandle(session, catalog));
-            PlanNode rewrittenPlan = new RemoveUnsupportedDynamicFilters(metadata.getFunctionManager()).optimize(root, session, TypeProvider.empty(), new PlanVariableAllocator(), new PlanNodeIdAllocator(), WarningCollector.NOOP);
+            PlanNode rewrittenPlan = new RemoveUnsupportedDynamicFilters(metadata.getFunctionAndTypeManager()).optimize(root, session, TypeProvider.empty(), new PlanVariableAllocator(), new PlanNodeIdAllocator(), WarningCollector.NOOP);
             new DynamicFiltersChecker().validate(rewrittenPlan, session, metadata, new SqlParser(), TypeProvider.empty(), WarningCollector.NOOP);
             return rewrittenPlan;
         });

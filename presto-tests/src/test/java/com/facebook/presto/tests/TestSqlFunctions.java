@@ -17,6 +17,7 @@ import com.facebook.presto.Session;
 import com.facebook.presto.testing.MaterializedResult;
 import com.facebook.presto.testing.MaterializedRow;
 import com.facebook.presto.testing.QueryRunner;
+import com.facebook.presto.udf.thrift.TestingThriftUdfServer;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import org.intellij.lang.annotations.Language;
@@ -38,6 +39,7 @@ public class TestSqlFunctions
     protected TestSqlFunctions()
     {
         super(TestSqlFunctions::createQueryRunner);
+        TestingThriftUdfServer.start(ImmutableMap.of("thrift.server.port", "7779"));
     }
 
     private static QueryRunner createQueryRunner()
@@ -46,11 +48,19 @@ public class TestSqlFunctions
             Session session = testSessionBuilder()
                     .setCatalog("tpch")
                     .setSchema(TINY_SCHEMA_NAME)
+                    .setSystemProperty("remote_functions_enabled", "true")
                     .build();
             DistributedQueryRunner queryRunner = DistributedQueryRunner.builder(session)
+                    .setExtraProperties(ImmutableMap.of("inline-sql-functions", "false"))
                     .setCoordinatorProperties(ImmutableMap.of("list-built-in-functions-only", "false"))
                     .build();
-            queryRunner.enableTestFunctionNamespaces(ImmutableList.of("testing", "example"), ImmutableMap.of("supported-function-languages", "{\"sql\": \"SQL\", \"java\": \"THRIFT\"}"));
+            queryRunner.enableTestFunctionNamespaces(
+                    ImmutableList.of("testing", "example"),
+                    ImmutableMap.of(
+                            "supported-function-languages", "sql, java",
+                            "java.function-implementation-type", "THRIFT",
+                            "java.thrift-page-format", "PRESTO_SERIALIZED",
+                            "java.thrift.client.addresses", "localhost:7779"));
             queryRunner.createTestFunctionNamespace("testing", "common");
             queryRunner.createTestFunctionNamespace("testing", "test");
             queryRunner.createTestFunctionNamespace("example", "example");
@@ -100,7 +110,7 @@ public class TestSqlFunctions
     @Test
     public void testCreateFunction()
     {
-        assertQuerySucceeds("CREATE FUNCTION testing.test.tan (x int) RETURNS double RETURN sin(x) / cos(x)");
+        assertQuerySucceeds("CREATE FUNCTION TESTING.TEST.TAN (x int) RETURNS double RETURN sin(x) / cos(x)");
         assertQuerySucceeds("CREATE FUNCTION testing.test.tan (x double) RETURNS double LANGUAGE JAVA RETURN sin(x) / cos(x)");
 
         // external function
@@ -162,6 +172,19 @@ public class TestSqlFunctions
 
         rows = computeActual("SELECT testing.test.return_int() + 3");
         assertEquals(rows.getMaterializedRows().get(0).getFields().get(0), 4);
+
+        assertQuerySucceeds("CREATE FUNCTION testing.test.add_1_bigint(x array(bigint)) RETURNS array(bigint) RETURN transform(x, x -> x + 1)");
+        String createFunctionAdd1BigintFormatted = "CREATE FUNCTION testing.test.add_1_bigint (\n" +
+                "   x array(bigint)\n" +
+                ")\n" +
+                "RETURNS array(bigint)\n" +
+                "COMMENT ''\n" +
+                "LANGUAGE SQL\n" +
+                "NOT DETERMINISTIC\n" +
+                "CALLED ON NULL INPUT\n" +
+                "RETURN \"transform\"(x, (x) -> (x + CAST(1 AS bigint)))";
+        rows = computeActual("SHOW CREATE FUNCTION testing.test.add_1_bigint(array(bigint))");
+        assertEquals(rows.getMaterializedRows().get(0).getFields(), ImmutableList.of(createFunctionAdd1BigintFormatted, "array(bigint)"));
     }
 
     @Test
@@ -366,6 +389,26 @@ public class TestSqlFunctions
         assertQuerySucceeds(createFunction);
 
         assertQuery("SELECT testing.test.array_sum(array[1, 2, 3])", "VALUES 6L");
+    }
+
+    @Test
+    void testSqlFunctionsWithLambda()
+    {
+        assertQuerySucceeds("CREATE FUNCTION testing.test.lambda1(x array<int>) RETURNS int RETURN reduce(x, 0, (s, a) -> s + a, s -> s)");
+        assertQuerySucceeds("CREATE FUNCTION testing.test.lambda2(x array<int>) RETURNS int RETURN reduce(x, 0, (s, a) -> if (a > 0, s + a, s), s -> s)");
+        assertQuerySucceeds("CREATE FUNCTION testing.test.lambda3(x array<int>) RETURNS int RETURN reduce(x, 0, (s, a) -> if (a < 0, s + a, s), s -> s)");
+        assertQuery("SELECT testing.test.lambda1(array_union(x, y)), testing.test.lambda2(array_union(x, y)), testing.test.lambda3(array_union(x, y)) FROM (VALUES (array[3, 5, 0, -4, -7], array[-1, 0, 1])) t(x, y)", "SELECT -3, 9, -12");
+    }
+
+    @Test
+    void testThriftRemoteFunction()
+    {
+        assertQuerySucceeds("CREATE FUNCTION testing.test.foo(x varchar) RETURNS varchar LANGUAGE JAVA EXTERNAL");
+        assertQuery("SELECT testing.test.foo(a) FROM (VALUES 'abc', 'def') t(a)", "VALUES 'abc', 'def'");
+        assertQueryFails("SELECT testing.test.foo(a) FROM (VALUES 1, 2, 3, 4) t(a)", ".*Unexpected parameters \\(integer\\) for function testing\\.test\\.foo\\..*");
+        assertQuerySucceeds("CREATE FUNCTION testing.test.foo(x integer) RETURNS integer LANGUAGE JAVA EXTERNAL");
+        assertQuery("SELECT testing.test.foo(cast(testing.test.foo(a) as varchar)) FROM (VALUES 1, 2, 3, 4) t(a)", "VALUES '1', '2', '3', '4'");
+        assertQuery("SELECT testing.test.foo(cast(testing.test.foo(a) as varchar)) FROM (VALUES 1, 2, 3, 4) t(a) WHERE testing.test.foo(a) > 2", "VALUES '3', '4'");
     }
 
     @Test

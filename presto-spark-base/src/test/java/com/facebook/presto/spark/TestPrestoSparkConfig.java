@@ -23,6 +23,7 @@ import java.util.Map;
 import static com.facebook.airlift.configuration.testing.ConfigAssertions.assertFullMapping;
 import static com.facebook.airlift.configuration.testing.ConfigAssertions.assertRecordedDefaults;
 import static io.airlift.units.DataSize.Unit.GIGABYTE;
+import static io.airlift.units.DataSize.Unit.KILOBYTE;
 
 public class TestPrestoSparkConfig
 {
@@ -32,7 +33,10 @@ public class TestPrestoSparkConfig
         assertRecordedDefaults(ConfigAssertions.recordDefaults(PrestoSparkConfig.class)
                 .setSparkPartitionCountAutoTuneEnabled(true)
                 .setInitialSparkPartitionCount(16)
-                .setMaxSplitsDataSizePerSparkPartition(new DataSize(2, GIGABYTE)));
+                .setMinSparkInputPartitionCountForAutoTune(100)
+                .setMaxSparkInputPartitionCountForAutoTune(1000)
+                .setMaxSplitsDataSizePerSparkPartition(new DataSize(2, GIGABYTE))
+                .setShuffleOutputTargetAverageRowSize(new DataSize(1, KILOBYTE)));
     }
 
     @Test
@@ -41,12 +45,18 @@ public class TestPrestoSparkConfig
         Map<String, String> properties = new ImmutableMap.Builder<String, String>()
                 .put("spark.partition-count-auto-tune-enabled", "false")
                 .put("spark.initial-partition-count", "128")
+                .put("spark.min-spark-input-partition-count-for-auto-tune", "200")
+                .put("spark.max-spark-input-partition-count-for-auto-tune", "2000")
                 .put("spark.max-splits-data-size-per-partition", "4GB")
+                .put("spark.shuffle-output-target-average-row-size", "10kB")
                 .build();
         PrestoSparkConfig expected = new PrestoSparkConfig()
                 .setSparkPartitionCountAutoTuneEnabled(false)
                 .setInitialSparkPartitionCount(128)
-                .setMaxSplitsDataSizePerSparkPartition(new DataSize(4, GIGABYTE));
+                .setMinSparkInputPartitionCountForAutoTune(200)
+                .setMaxSparkInputPartitionCountForAutoTune(2000)
+                .setMaxSplitsDataSizePerSparkPartition(new DataSize(4, GIGABYTE))
+                .setShuffleOutputTargetAverageRowSize(new DataSize(10, KILOBYTE));
         assertFullMapping(properties, expected);
     }
 }

@@ -14,6 +14,7 @@
 package com.facebook.presto.hive.pagefile;
 
 import com.facebook.presto.common.block.BlockEncodingSerde;
+import com.facebook.presto.common.io.DataSink;
 import com.facebook.presto.hive.EncryptionInformation;
 import com.facebook.presto.hive.HdfsEnvironment;
 import com.facebook.presto.hive.HiveCompressionCodec;
@@ -21,9 +22,10 @@ import com.facebook.presto.hive.HiveFileWriter;
 import com.facebook.presto.hive.HiveFileWriterFactory;
 import com.facebook.presto.hive.datasink.DataSinkFactory;
 import com.facebook.presto.hive.metastore.StorageFormat;
-import com.facebook.presto.orc.DataSink;
 import com.facebook.presto.orc.zlib.DeflateCompressor;
 import com.facebook.presto.orc.zlib.InflateDecompressor;
+import com.facebook.presto.orc.zstd.ZstdJniCompressor;
+import com.facebook.presto.orc.zstd.ZstdJniDecompressor;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.page.PageCompressor;
@@ -150,6 +152,10 @@ public class PageFileWriterFactory
             case GZIP:
                 pageCompressor = new AirliftCompressorAdapter(new DeflateCompressor());
                 pageDecompressor = new AirliftDecompressorAdapter(new InflateDecompressor());
+                break;
+            case ZSTD:
+                pageCompressor = new AirliftCompressorAdapter(new ZstdJniCompressor());
+                pageDecompressor = new AirliftDecompressorAdapter(new ZstdJniDecompressor());
                 break;
             default:
                 throw new PrestoException(

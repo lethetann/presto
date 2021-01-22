@@ -14,10 +14,11 @@
 package com.facebook.presto.sql.planner.iterative.rule;
 
 import com.facebook.presto.Session;
-import com.facebook.presto.execution.warnings.WarningCollector;
+import com.facebook.presto.expressions.DynamicFilters;
 import com.facebook.presto.expressions.DynamicFilters.DynamicFilterExtractResult;
 import com.facebook.presto.expressions.LogicalRowExpressions;
-import com.facebook.presto.metadata.FunctionManager;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
+import com.facebook.presto.spi.WarningCollector;
 import com.facebook.presto.spi.plan.FilterNode;
 import com.facebook.presto.spi.plan.PlanNode;
 import com.facebook.presto.spi.plan.PlanNodeIdAllocator;
@@ -27,20 +28,25 @@ import com.facebook.presto.spi.relation.VariableReferenceExpression;
 import com.facebook.presto.sql.planner.PlanVariableAllocator;
 import com.facebook.presto.sql.planner.TypeProvider;
 import com.facebook.presto.sql.planner.optimizations.PlanOptimizer;
+import com.facebook.presto.sql.planner.plan.AbstractJoinNode;
 import com.facebook.presto.sql.planner.plan.InternalPlanVisitor;
 import com.facebook.presto.sql.planner.plan.JoinNode;
+import com.facebook.presto.sql.planner.plan.SemiJoinNode;
 import com.facebook.presto.sql.relational.FunctionResolution;
 import com.facebook.presto.sql.relational.RowExpressionDeterminismEvaluator;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
 import static com.facebook.presto.expressions.DynamicFilters.extractDynamicFilters;
 import static com.facebook.presto.expressions.DynamicFilters.getPlaceholder;
+import static com.facebook.presto.expressions.DynamicFilters.removeNestedDynamicFilters;
 import static com.facebook.presto.expressions.LogicalRowExpressions.TRUE_CONSTANT;
 import static com.facebook.presto.expressions.LogicalRowExpressions.extractConjuncts;
 import static com.facebook.presto.sql.planner.plan.ChildReplacer.replaceChildren;
@@ -58,13 +64,13 @@ public class RemoveUnsupportedDynamicFilters
 {
     private final LogicalRowExpressions logicalRowExpressions;
 
-    public RemoveUnsupportedDynamicFilters(FunctionManager functionManager)
+    public RemoveUnsupportedDynamicFilters(FunctionAndTypeManager functionAndTypeManager)
     {
-        requireNonNull(functionManager, "functionManager is null");
+        requireNonNull(functionAndTypeManager, "functionManager is null");
         this.logicalRowExpressions = new LogicalRowExpressions(
-                new RowExpressionDeterminismEvaluator(functionManager),
-                new FunctionResolution(functionManager),
-                functionManager);
+                new RowExpressionDeterminismEvaluator(functionAndTypeManager),
+                new FunctionResolution(functionAndTypeManager),
+                functionAndTypeManager);
     }
 
     @Override
@@ -107,41 +113,74 @@ public class RemoveUnsupportedDynamicFilters
         @Override
         public PlanWithConsumedDynamicFilters visitJoin(JoinNode node, Set<String> allowedDynamicFilterIds)
         {
+            JoinDynamicFilterResult joinDynamicFilterResult = extractDynamicFilterFromJoin(node, allowedDynamicFilterIds);
+            if (!joinDynamicFilterResult.getProbe().equals(node.getLeft()) || !joinDynamicFilterResult.getBuild().equals(node.getRight()) || !joinDynamicFilterResult.getDynamicFilters().equals(node.getDynamicFilters())) {
+                Optional<RowExpression> filter = node
+                        .getFilter().map(this::removeAllDynamicFilters)  // dynamic filtering is not supported for LookupJoinOperators
+                        .filter(expression -> !expression.equals(TRUE_CONSTANT));
+                return new PlanWithConsumedDynamicFilters(
+                        new JoinNode(
+                            node.getId(),
+                            node.getType(),
+                                joinDynamicFilterResult.getProbe(),
+                                joinDynamicFilterResult.getBuild(),
+                            node.getCriteria(),
+                            node.getOutputVariables(),
+                            filter,
+                            node.getLeftHashVariable(),
+                            node.getRightHashVariable(),
+                            node.getDistributionType(),
+                                joinDynamicFilterResult.getDynamicFilters()),
+                        ImmutableSet.copyOf(joinDynamicFilterResult.getConsumed()));
+            }
+            return new PlanWithConsumedDynamicFilters(node, ImmutableSet.copyOf(joinDynamicFilterResult.getConsumed()));
+        }
+
+        @Override
+        public PlanWithConsumedDynamicFilters visitSemiJoin(SemiJoinNode node, Set<String> allowedDynamicFilterIds)
+        {
+            JoinDynamicFilterResult joinDynamicFilterResult = extractDynamicFilterFromJoin(node, allowedDynamicFilterIds);
+            if (!joinDynamicFilterResult.getProbe().equals(node.getSource())
+                    || !joinDynamicFilterResult.getBuild().equals(node.getFilteringSource())
+                    || !joinDynamicFilterResult.getDynamicFilters().equals(node.getDynamicFilters())) {
+                return new PlanWithConsumedDynamicFilters(
+                        new SemiJoinNode(
+                                node.getId(),
+                                joinDynamicFilterResult.getProbe(),
+                                joinDynamicFilterResult.getBuild(),
+                                node.getSourceJoinVariable(),
+                                node.getFilteringSourceJoinVariable(),
+                                node.getSemiJoinOutput(),
+                                node.getSourceHashVariable(),
+                                node.getFilteringSourceHashVariable(),
+                                node.getDistributionType(),
+                                joinDynamicFilterResult.getDynamicFilters()),
+                        ImmutableSet.copyOf(joinDynamicFilterResult.getConsumed()));
+            }
+            return new PlanWithConsumedDynamicFilters(node, ImmutableSet.copyOf(joinDynamicFilterResult.getConsumed()));
+        }
+
+        private JoinDynamicFilterResult extractDynamicFilterFromJoin(AbstractJoinNode node, Set<String> allowedDynamicFilterIds)
+        {
             ImmutableSet<String> allowedDynamicFilterIdsProbeSide = ImmutableSet.<String>builder()
                     .addAll(node.getDynamicFilters().keySet())
                     .addAll(allowedDynamicFilterIds)
                     .build();
 
-            PlanWithConsumedDynamicFilters leftResult = node.getLeft().accept(this, allowedDynamicFilterIdsProbeSide);
+            PlanWithConsumedDynamicFilters leftResult = node.getProbe().accept(this, allowedDynamicFilterIdsProbeSide);
             Set<String> consumedProbeSide = leftResult.getConsumedDynamicFilterIds();
             Map<String, VariableReferenceExpression> dynamicFilters = node.getDynamicFilters().entrySet().stream()
                     .filter(entry -> consumedProbeSide.contains(entry.getKey()))
                     .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
 
-            PlanWithConsumedDynamicFilters rightResult = node.getRight().accept(this, allowedDynamicFilterIds);
+            PlanWithConsumedDynamicFilters rightResult = node.getBuild().accept(this, allowedDynamicFilterIds);
             Set<String> consumed = new HashSet<>(rightResult.getConsumedDynamicFilterIds());
             consumed.addAll(consumedProbeSide);
             consumed.removeAll(dynamicFilters.keySet());
 
             PlanNode left = leftResult.getNode();
             PlanNode right = rightResult.getNode();
-            if (!left.equals(node.getLeft()) || !right.equals(node.getRight()) || !dynamicFilters.equals(node.getDynamicFilters())) {
-                return new PlanWithConsumedDynamicFilters(
-                        new JoinNode(
-                            node.getId(),
-                            node.getType(),
-                            left,
-                            right,
-                            node.getCriteria(),
-                            node.getOutputVariables(),
-                            node.getFilter(),
-                            node.getLeftHashVariable(),
-                            node.getRightHashVariable(),
-                            node.getDistributionType(),
-                            dynamicFilters),
-                        ImmutableSet.copyOf(consumed));
-            }
-            return new PlanWithConsumedDynamicFilters(node, ImmutableSet.copyOf(consumed));
+            return new JoinDynamicFilterResult(left, right, dynamicFilters, consumed);
         }
 
         @Override
@@ -177,8 +216,8 @@ public class RemoveUnsupportedDynamicFilters
 
         private RowExpression removeDynamicFilters(RowExpression expression, Set<String> allowedDynamicFilterIds, ImmutableSet.Builder<String> consumedDynamicFilterIds)
         {
-            return logicalRowExpressions.combineConjuncts(extractConjuncts(expression)
-                    .stream()
+            return logicalRowExpressions.combineConjuncts(extractConjuncts(expression).stream()
+                    .map(DynamicFilters::removeNestedDynamicFilters)
                     .filter(conjunct ->
                             getPlaceholder(conjunct)
                                     .map(placeholder -> {
@@ -193,11 +232,48 @@ public class RemoveUnsupportedDynamicFilters
 
         private RowExpression removeAllDynamicFilters(RowExpression expression)
         {
-            DynamicFilterExtractResult extractResult = extractDynamicFilters(expression);
+            RowExpression rewrittenExpression = removeNestedDynamicFilters(expression);
+            DynamicFilterExtractResult extractResult = extractDynamicFilters(rewrittenExpression);
             if (extractResult.getDynamicConjuncts().isEmpty()) {
-                return expression;
+                return rewrittenExpression;
             }
             return logicalRowExpressions.combineConjuncts(extractResult.getStaticConjuncts());
+        }
+    }
+
+    private static class JoinDynamicFilterResult
+    {
+        private final PlanNode probe;
+        private final PlanNode build;
+        private final Map<String, VariableReferenceExpression> dynamicFilters;
+        private final Set<String> consumed;
+
+        public JoinDynamicFilterResult(PlanNode probe, PlanNode build, Map<String, VariableReferenceExpression> dynamicFilters, Set<String> consumed)
+        {
+            this.probe = probe;
+            this.build = build;
+            this.dynamicFilters = ImmutableMap.copyOf(dynamicFilters);
+            this.consumed = ImmutableSet.copyOf(consumed);
+        }
+
+        public PlanNode getProbe()
+        {
+            return probe;
+        }
+
+        public PlanNode getBuild()
+        {
+            return build;
+        }
+
+        public Map<String, VariableReferenceExpression> getDynamicFilters()
+        {
+            return dynamicFilters;
+        }
+
+        public Set<String> getConsumed()
+        {
+            return consumed;
         }
     }
 

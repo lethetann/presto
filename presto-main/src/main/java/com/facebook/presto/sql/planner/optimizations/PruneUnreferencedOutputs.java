@@ -14,8 +14,8 @@
 package com.facebook.presto.sql.planner.optimizations;
 
 import com.facebook.presto.Session;
-import com.facebook.presto.execution.warnings.WarningCollector;
 import com.facebook.presto.spi.ColumnHandle;
+import com.facebook.presto.spi.WarningCollector;
 import com.facebook.presto.spi.plan.AggregationNode;
 import com.facebook.presto.spi.plan.AggregationNode.Aggregation;
 import com.facebook.presto.spi.plan.Assignments;
@@ -287,7 +287,8 @@ public class PruneUnreferencedOutputs
                     node.getSemiJoinOutput(),
                     node.getSourceHashVariable(),
                     node.getFilteringSourceHashVariable(),
-                    node.getDistributionType());
+                    node.getDistributionType(),
+                    node.getDynamicFilters());
         }
 
         @Override
@@ -431,14 +432,13 @@ public class PruneUnreferencedOutputs
                 }
             }
 
-            PlanNode source = context.rewrite(node.getSource(), expectedInputs.build());
-
             Map<VariableReferenceExpression, WindowNode.Function> functions = functionsBuilder.build();
-
             if (functions.size() == 0) {
-                return source;
+                // As the window plan node is getting skipped, use the inputs needed by the parent of the Window plan node
+                return context.rewrite(node.getSource(), context.get());
             }
 
+            PlanNode source = context.rewrite(node.getSource(), expectedInputs.build());
             return new WindowNode(
                     node.getId(),
                     source,

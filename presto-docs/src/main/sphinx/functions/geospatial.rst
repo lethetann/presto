@@ -286,6 +286,15 @@ Accessors
 
     Returns the great-circle distance in meters between two SphericalGeography points.
 
+.. function:: geometry_nearest_points(Geometry, Geometry) -> array(Point)
+
+    Returns the points on each geometry nearest the other.  If either geometry
+    is empty, return ``NULL``.  Otherwise, return an array of two Points that have
+    the minimum distance of any two points on the geometries.  The first Point
+    will be from the first Geometry argument, the second from the second Geometry
+    argument.  If there are multiple pairs with the minimum distance, one pair
+    is chosen arbitrarily.
+
 .. function:: ST_GeometryN(Geometry, index) -> Geometry
 
     Returns the geometry element at a given index (indices start at 1).
@@ -462,6 +471,16 @@ Accessors
 .. function:: great_circle_distance(latitude1, longitude1, latitude2, longitude2) -> double
 
     Returns the great-circle distance between two points on Earth's surface in kilometers.
+
+.. function:: geometry_as_geojson(Geometry) -> varchar
+
+    Returns the GeoJSON encoded defined by the input geometry.
+    If the geometry is atomic (non-multi) empty, this function would return null.
+
+.. function:: geometry_from_geojson(varchar) -> Geometry
+
+    Returns the geometry type object from the GeoJSON representation.
+    The geometry cannot be empty if it is an atomic (non-multi) geometry type.
 
 Aggregations
 ------------

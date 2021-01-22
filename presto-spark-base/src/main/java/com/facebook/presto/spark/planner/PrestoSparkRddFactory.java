@@ -39,14 +39,18 @@ import com.facebook.presto.spark.util.PrestoSparkUtils;
 import com.facebook.presto.spi.ConnectorId;
 import com.facebook.presto.spi.ConnectorSplit;
 import com.facebook.presto.spi.PrestoException;
+import com.facebook.presto.spi.WarningCollector;
 import com.facebook.presto.spi.connector.ConnectorNodePartitioningProvider;
 import com.facebook.presto.spi.plan.PlanNode;
+import com.facebook.presto.spi.plan.PlanNodeId;
 import com.facebook.presto.spi.plan.TableScanNode;
+import com.facebook.presto.split.CloseableSplitSourceProvider;
 import com.facebook.presto.split.SplitManager;
 import com.facebook.presto.split.SplitSource;
 import com.facebook.presto.sql.planner.PartitioningHandle;
 import com.facebook.presto.sql.planner.PartitioningProviderManager;
 import com.facebook.presto.sql.planner.PlanFragment;
+import com.facebook.presto.sql.planner.SplitSourceFactory;
 import com.facebook.presto.sql.planner.plan.PlanFragmentId;
 import com.facebook.presto.sql.planner.plan.RemoteSourceNode;
 import com.google.common.annotations.VisibleForTesting;
@@ -82,11 +86,12 @@ import java.util.stream.IntStream;
 
 import static com.facebook.airlift.concurrent.MoreFutures.getFutureValue;
 import static com.facebook.presto.SystemSessionProperties.getHashPartitionCount;
+import static com.facebook.presto.spark.PrestoSparkSessionProperties.getMaxSparkInputPartitionCountForAutoTune;
 import static com.facebook.presto.spark.PrestoSparkSessionProperties.getMaxSplitsDataSizePerSparkPartition;
+import static com.facebook.presto.spark.PrestoSparkSessionProperties.getMinSparkInputPartitionCountForAutoTune;
 import static com.facebook.presto.spark.PrestoSparkSessionProperties.getSparkInitialPartitionCount;
 import static com.facebook.presto.spark.PrestoSparkSessionProperties.isSparkPartitionCountAutoTuneEnabled;
 import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
-import static com.facebook.presto.spi.connector.ConnectorSplitManager.SplitSchedulingStrategy.UNGROUPED_SCHEDULING;
 import static com.facebook.presto.spi.connector.NotPartitionedPartitionHandle.NOT_PARTITIONED;
 import static com.facebook.presto.sql.planner.SystemPartitioningHandle.ARBITRARY_DISTRIBUTION;
 import static com.facebook.presto.sql.planner.SystemPartitioningHandle.COORDINATOR_DISTRIBUTION;
@@ -150,16 +155,6 @@ public class PrestoSparkRddFactory
             throw new PrestoException(NOT_SUPPORTED, "Automatic writers scaling is not supported by Presto on Spark");
         }
 
-        // Currently remote round robin exchange is only used in two cases
-        // - Redistribute writes:
-        //   Originally introduced to avoid skewed table writes. Makes sense with streaming exchanges
-        //   as those are very cheap. Since spark has to write the data to disk anyway the optimization
-        //   doesn't make much sense in Presto on Spark context, thus it is always disabled.
-        // - Some corner cases of UNION (e.g.: broadcasted UNION ALL)
-        //   Since round robin exchange is very costly on Spark (and potentially a correctness hazard)
-        //   such unions are always planned with Gather (SINGLE_DISTRIBUTION)
-        checkArgument(!partitioning.equals(FIXED_ARBITRARY_DISTRIBUTION), "FIXED_ARBITRARY_DISTRIBUTION is not supported");
-
         checkArgument(!partitioning.equals(COORDINATOR_DISTRIBUTION), "COORDINATOR_DISTRIBUTION fragment must be run on the driver");
         checkArgument(!partitioning.equals(FIXED_BROADCAST_DISTRIBUTION), "FIXED_BROADCAST_DISTRIBUTION can only be set as an output partitioning scheme, and not as a fragment distribution");
         checkArgument(!partitioning.equals(FIXED_PASSTHROUGH_DISTRIBUTION), "FIXED_PASSTHROUGH_DISTRIBUTION can only be set as local exchange partitioning");
@@ -174,6 +169,7 @@ public class PrestoSparkRddFactory
 
         if (partitioning.equals(SINGLE_DISTRIBUTION) ||
                 partitioning.equals(FIXED_HASH_DISTRIBUTION) ||
+                partitioning.equals(FIXED_ARBITRARY_DISTRIBUTION) ||
                 partitioning.equals(SOURCE_DISTRIBUTION) ||
                 partitioning.getConnectorId().isPresent()) {
             for (RemoteSourceNode remoteSource : fragment.getRemoteSourceNodes()) {
@@ -212,6 +208,15 @@ public class PrestoSparkRddFactory
             int hashPartitionCount = getHashPartitionCount(session);
             return fragment.withBucketToPartition(Optional.of(IntStream.range(0, hashPartitionCount).toArray()));
         }
+        //  FIXED_ARBITRARY_DISTRIBUTION is used for UNION ALL
+        //  UNION ALL inputs could be source inputs or shuffle inputs
+        if (outputPartitioningHandle.equals(FIXED_ARBITRARY_DISTRIBUTION)) {
+            // given modular hash function, partition count could be arbitrary size
+            // simply reuse hash_partition_count for convenience
+            // it can also be set by a separate session property if needed
+            int partitionCount = getHashPartitionCount(session);
+            return fragment.withBucketToPartition(Optional.of(IntStream.range(0, partitionCount).toArray()));
+        }
         if (outputPartitioningHandle.getConnectorId().isPresent()) {
             int connectorPartitionCount = getPartitionCount(session, outputPartitioningHandle);
             return fragment.withBucketToPartition(Optional.of(IntStream.range(0, connectorPartitionCount).toArray()));
@@ -235,7 +240,7 @@ public class PrestoSparkRddFactory
         if (partitioning.equals(SINGLE_DISTRIBUTION)) {
             return new PrestoSparkPartitioner(1);
         }
-        if (partitioning.equals(FIXED_HASH_DISTRIBUTION)) {
+        if (partitioning.equals(FIXED_HASH_DISTRIBUTION) || partitioning.equals(FIXED_ARBITRARY_DISTRIBUTION)) {
             int hashPartitionCount = getHashPartitionCount(session);
             return new PrestoSparkPartitioner(hashPartitionCount);
         }
@@ -296,8 +301,17 @@ public class PrestoSparkRddFactory
         Optional<PrestoSparkTaskSourceRdd> taskSourceRdd;
         List<TableScanNode> tableScans = findTableScanNodes(fragment.getRoot());
         if (!tableScans.isEmpty()) {
-            PartitioningHandle partitioning = fragment.getPartitioning();
-            taskSourceRdd = Optional.of(createTaskSourcesRdd(sparkContext, session, partitioning, tableScans, numberOfShufflePartitions));
+            try (CloseableSplitSourceProvider splitSourceProvider = new CloseableSplitSourceProvider(splitManager::getSplits)) {
+                SplitSourceFactory splitSourceFactory = new SplitSourceFactory(splitSourceProvider, WarningCollector.NOOP);
+                Map<PlanNodeId, SplitSource> splitSources = splitSourceFactory.createSplitSources(fragment, session, tableWriteInfo);
+                taskSourceRdd = Optional.of(createTaskSourcesRdd(
+                        sparkContext,
+                        session,
+                        fragment.getPartitioning(),
+                        tableScans,
+                        splitSources,
+                        numberOfShufflePartitions));
+            }
         }
         else if (rddInputs.size() == 0) {
             checkArgument(fragment.getPartitioning().equals(SINGLE_DISTRIBUTION), "SINGLE_DISTRIBUTION partitioning is expected: %s", fragment.getPartitioning());
@@ -322,11 +336,13 @@ public class PrestoSparkRddFactory
             Session session,
             PartitioningHandle partitioning,
             List<TableScanNode> tableScans,
+            Map<PlanNodeId, SplitSource> splitSources,
             Optional<Integer> numberOfShufflePartitions)
     {
         ListMultimap<Integer, TaskSource> taskSourcesMap = ArrayListMultimap.create();
         for (TableScanNode tableScan : tableScans) {
-            List<ScheduledSplit> scheduledSplits = getSplits(session, tableScan);
+            SplitSource splitSource = requireNonNull(splitSources.get(tableScan.getId()), "split source is missing for table scan node with id: " + tableScan.getId());
+            List<ScheduledSplit> scheduledSplits = getSplitsAndCloseSource(tableScan, splitSource);
             shuffle(scheduledSplits);
             SetMultimap<Integer, ScheduledSplit> assignedSplits = assignSplitsToTasks(session, partitioning, scheduledSplits);
             asMap(assignedSplits).forEach((partitionId, splits) ->
@@ -364,18 +380,22 @@ public class PrestoSparkRddFactory
         return new PrestoSparkTaskSourceRdd(sparkContext.sc(), taskSourcesByPartitionId);
     }
 
-    private List<ScheduledSplit> getSplits(Session session, TableScanNode tableScan)
+    private List<ScheduledSplit> getSplitsAndCloseSource(TableScanNode tableScan, SplitSource splitSource)
     {
-        List<ScheduledSplit> splits = new ArrayList<>();
-        SplitSource splitSource = splitManager.getSplits(session, tableScan.getTable(), UNGROUPED_SCHEDULING);
-        long sequenceId = 0;
-        while (!splitSource.isFinished()) {
-            List<Split> splitBatch = getFutureValue(splitSource.getNextBatch(NOT_PARTITIONED, Lifespan.taskWide(), 1000)).getSplits();
-            for (Split split : splitBatch) {
-                splits.add(new ScheduledSplit(sequenceId++, tableScan.getId(), split));
+        try {
+            List<ScheduledSplit> splits = new ArrayList<>();
+            long sequenceId = 0;
+            while (!splitSource.isFinished()) {
+                List<Split> splitBatch = getFutureValue(splitSource.getNextBatch(NOT_PARTITIONED, Lifespan.taskWide(), 1000)).getSplits();
+                for (Split split : splitBatch) {
+                    splits.add(new ScheduledSplit(sequenceId++, tableScan.getId(), split));
+                }
             }
+            return splits;
         }
-        return splits;
+        finally {
+            splitSource.close();
+        }
     }
 
     private SetMultimap<Integer, ScheduledSplit> assignSplitsToTasks(Session session, PartitioningHandle partitioning, List<ScheduledSplit> splits)
@@ -419,26 +439,29 @@ public class PrestoSparkRddFactory
         int partitionCount = 0;
         boolean autoTunePartitionCount = isSparkPartitionCountAutoTuneEnabled(session);
         if (autoTunePartitionCount) {
+            int minPartitionCount = getMinSparkInputPartitionCountForAutoTune(session);
+            int maxPartitionCount = getMaxSparkInputPartitionCountForAutoTune(session);
+            checkArgument(minPartitionCount >= 1 && minPartitionCount <= maxPartitionCount,
+                    "Min partition count for auto tune (%s) should be a positive integer and not larger than max partition count (%s)",
+                    minPartitionCount,
+                    maxPartitionCount);
+
             for (int splitIndex = 0; splitIndex < splits.size(); splitIndex++) {
                 int partitionId;
                 long splitSizeInBytes = splits.get(splitIndex).getSplit().getConnectorSplit().getSplitSizeInBytes().getAsLong();
 
-                if (!queue.isEmpty() &&
-                        queue.peek().getSplitsInBytes() + splitSizeInBytes <= maxSplitsSizeInBytesPerPartition) {
+                if ((partitionCount >= minPartitionCount && queue.peek().getSplitsInBytes() + splitSizeInBytes <= maxSplitsSizeInBytesPerPartition)
+                        || partitionCount == maxPartitionCount) {
                     SparkPartition partition = queue.poll();
                     partitionId = partition.getPartitionId();
                     partition.assignSplitWithSize(splitSizeInBytes);
-                    if (partition.getSplitsInBytes() < maxSplitsSizeInBytesPerPartition) {
-                        queue.add(partition);
-                    }
+                    queue.add(partition);
                 }
                 else {
                     partitionId = partitionCount++;
-                    if (splitSizeInBytes < maxSplitsSizeInBytesPerPartition) {
-                        SparkPartition newPartition = new SparkPartition(partitionId);
-                        newPartition.assignSplitWithSize(splitSizeInBytes);
-                        queue.add(newPartition);
-                    }
+                    SparkPartition newPartition = new SparkPartition(partitionId);
+                    newPartition.assignSplitWithSize(splitSizeInBytes);
+                    queue.add(newPartition);
                 }
 
                 result.put(partitionId, splits.get(splitIndex));

@@ -19,6 +19,7 @@ import com.facebook.presto.operator.aggregation.arrayagg.ArrayAggGroupImplementa
 import com.facebook.presto.operator.aggregation.histogram.HistogramGroupImplementation;
 import com.facebook.presto.operator.aggregation.multimapagg.MultimapAggGroupImplementation;
 import com.facebook.presto.sql.analyzer.FeaturesConfig.PartitioningPrecisionStrategy;
+import com.facebook.presto.sql.analyzer.FeaturesConfig.SingleStreamSpillerChoice;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
@@ -37,6 +38,8 @@ import static com.facebook.presto.sql.analyzer.FeaturesConfig.JoinReorderingStra
 import static com.facebook.presto.sql.analyzer.FeaturesConfig.PartialMergePushdownStrategy.PUSH_THROUGH_LOW_MEMORY_OPERATORS;
 import static com.facebook.presto.sql.analyzer.FeaturesConfig.SPILLER_SPILL_PATH;
 import static com.facebook.presto.sql.analyzer.FeaturesConfig.SPILL_ENABLED;
+import static com.facebook.presto.sql.analyzer.FeaturesConfig.TaskSpillingStrategy.ORDER_BY_CREATE_TIME;
+import static com.facebook.presto.sql.analyzer.FeaturesConfig.TaskSpillingStrategy.PER_TASK_MEMORY_THRESHOLD;
 import static com.facebook.presto.sql.analyzer.RegexLibrary.JONI;
 import static com.facebook.presto.sql.analyzer.RegexLibrary.RE2J;
 import static io.airlift.units.DataSize.Unit.GIGABYTE;
@@ -57,9 +60,6 @@ public class TestFeaturesConfig
                 .setDistributedIndexJoinsEnabled(false)
                 .setJoinDistributionType(PARTITIONED)
                 .setJoinMaxBroadcastTableSize(null)
-                .setGroupedExecutionForAggregationEnabled(true)
-                .setGroupedExecutionForJoinEnabled(true)
-                .setDynamicScheduleForGroupedExecutionEnabled(true)
                 .setGroupedExecutionEnabled(true)
                 .setRecoverableGroupedExecutionEnabled(false)
                 .setMaxFailedTaskPercentage(0.3)
@@ -87,12 +87,17 @@ public class TestFeaturesConfig
                 .setRe2JDfaStatesLimit(Integer.MAX_VALUE)
                 .setRe2JDfaRetries(5)
                 .setSpillEnabled(false)
+                .setJoinSpillingEnabled(false)
                 .setAggregationOperatorUnspillMemoryLimit(DataSize.valueOf("4MB"))
                 .setSpillerSpillPaths("")
                 .setSpillerThreads(4)
                 .setSpillMaxUsedSpaceThreshold(0.9)
                 .setMemoryRevokingThreshold(0.9)
                 .setMemoryRevokingTarget(0.5)
+                .setTaskSpillingStrategy(ORDER_BY_CREATE_TIME)
+                .setSingleStreamSpillerChoice(SingleStreamSpillerChoice.LOCAL_FILE)
+                .setSpillerTempStorage("local")
+                .setMaxRevocableMemoryPerTask(new DataSize(500, MEGABYTE))
                 .setOptimizeMixedDistinctAggregations(false)
                 .setLegacyLogFunction(false)
                 .setIterativeOptimizerEnabled(true)
@@ -101,6 +106,7 @@ public class TestFeaturesConfig
                 .setEnableDynamicFiltering(false)
                 .setDynamicFilteringMaxPerDriverRowCount(100)
                 .setDynamicFilteringMaxPerDriverSize(new DataSize(10, KILOBYTE))
+                .setFragmentResultCachingEnabled(false)
                 .setEnableStatsCalculator(true)
                 .setEnableStatsCollectionForTemporaryTable(false)
                 .setIgnoreStatsCalculatorFailures(true)
@@ -110,6 +116,7 @@ public class TestFeaturesConfig
                 .setLegacyTimestamp(true)
                 .setLegacyRowFieldOrdinalAccess(false)
                 .setLegacyCharToVarcharCoercion(false)
+                .setLegacyDateTimestampToVarcharCoercion(false)
                 .setEnableIntermediateAggregations(false)
                 .setPushAggregationThroughJoin(true)
                 .setParseDecimalLiteralsAsDouble(false)
@@ -132,7 +139,6 @@ public class TestFeaturesConfig
                 .setPushdownSubfieldsEnabled(false)
                 .setPushdownDereferenceEnabled(false)
                 .setTableWriterMergeOperatorEnabled(true)
-                .setOptimizeFullOuterJoinWithCoalesce(true)
                 .setIndexLoaderTimeout(new Duration(20, SECONDS))
                 .setOptimizedRepartitioningEnabled(false)
                 .setListBuiltInFunctionsOnly(true)
@@ -142,7 +148,11 @@ public class TestFeaturesConfig
                 .setOptimizeCommonSubExpressions(true)
                 .setPreferDistributedUnion(true)
                 .setOptimizeNullsInJoin(false)
-                .setWarnOnNoTableLayoutFilter(""));
+                .setSkipRedundantSort(true)
+                .setWarnOnNoTableLayoutFilter("")
+                .setInlineSqlFunctions(true)
+                .setCheckAccessControlOnUtilizedColumnsOnly(false)
+                .setAllowWindowOrderByLiterals(true));
     }
 
     @Test
@@ -158,6 +168,7 @@ public class TestFeaturesConfig
                 .put("experimental.enable-dynamic-filtering", "true")
                 .put("experimental.dynamic-filtering-max-per-driver-row-count", "256")
                 .put("experimental.dynamic-filtering-max-per-driver-size", "64kB")
+                .put("experimental.fragment-result-caching-enabled", "true")
                 .put("experimental.enable-stats-calculator", "false")
                 .put("experimental.enable-stats-collection-for-temporary-table", "true")
                 .put("optimizer.ignore-stats-calculator-failures", "false")
@@ -169,13 +180,11 @@ public class TestFeaturesConfig
                 .put("deprecated.legacy-map-subscript", "true")
                 .put("deprecated.legacy-row-field-ordinal-access", "true")
                 .put("deprecated.legacy-char-to-varchar-coercion", "true")
+                .put("deprecated.legacy-date-timestamp-to-varchar-coercion", "true")
                 .put("distributed-index-joins-enabled", "true")
                 .put("join-distribution-type", "BROADCAST")
                 .put("join-max-broadcast-table-size", "42GB")
-                .put("grouped-execution-for-aggregation-enabled", "false")
-                .put("grouped-execution-for-join-enabled", "false")
                 .put("grouped-execution-enabled", "false")
-                .put("dynamic-schedule-for-grouped-execution", "false")
                 .put("recoverable-grouped-execution-enabled", "true")
                 .put("max-failed-task-percentage", "0.8")
                 .put("max-stage-retries", "10")
@@ -201,12 +210,17 @@ public class TestFeaturesConfig
                 .put("re2j.dfa-states-limit", "42")
                 .put("re2j.dfa-retries", "42")
                 .put("experimental.spill-enabled", "true")
+                .put("experimental.join-spill-enabled", "true")
                 .put("experimental.aggregation-operator-unspill-memory-limit", "100MB")
                 .put("experimental.spiller-spill-path", "/tmp/custom/spill/path1,/tmp/custom/spill/path2")
                 .put("experimental.spiller-threads", "42")
                 .put("experimental.spiller-max-used-space-threshold", "0.8")
                 .put("experimental.memory-revoking-threshold", "0.2")
                 .put("experimental.memory-revoking-target", "0.8")
+                .put("experimental.spiller.task-spilling-strategy", "PER_TASK_MEMORY_THRESHOLD")
+                .put("experimental.spiller.single-stream-spiller-choice", "TEMP_STORAGE")
+                .put("experimental.spiller.spiller-temp-storage", "crail")
+                .put("experimental.spiller.max-revocable-task-memory", "1GB")
                 .put("exchange.compression-enabled", "true")
                 .put("deprecated.legacy-timestamp", "false")
                 .put("optimizer.enable-intermediate-aggregations", "true")
@@ -230,7 +244,6 @@ public class TestFeaturesConfig
                 .put("experimental.pushdown-subfields-enabled", "true")
                 .put("experimental.pushdown-dereference-enabled", "true")
                 .put("experimental.table-writer-merge-operator-enabled", "false")
-                .put("optimizer.optimize-full-outer-join-with-coalesce", "false")
                 .put("index-loader-timeout", "10s")
                 .put("experimental.optimized-repartitioning", "true")
                 .put("list-built-in-functions-only", "false")
@@ -241,6 +254,10 @@ public class TestFeaturesConfig
                 .put("prefer-distributed-union", "false")
                 .put("optimize-nulls-in-join", "true")
                 .put("warn-on-no-table-layout-filter", "ry@nlikestheyankees,ds")
+                .put("inline-sql-functions", "false")
+                .put("check-access-control-on-utilized-columns-only", "true")
+                .put("optimizer.skip-redundant-sort", "false")
+                .put("is-allow-window-order-by-literals", "false")
                 .build();
 
         FeaturesConfig expected = new FeaturesConfig()
@@ -253,6 +270,7 @@ public class TestFeaturesConfig
                 .setEnableDynamicFiltering(true)
                 .setDynamicFilteringMaxPerDriverRowCount(256)
                 .setDynamicFilteringMaxPerDriverSize(new DataSize(64, KILOBYTE))
+                .setFragmentResultCachingEnabled(true)
                 .setEnableStatsCalculator(false)
                 .setEnableStatsCollectionForTemporaryTable(true)
                 .setIgnoreStatsCalculatorFailures(false)
@@ -260,10 +278,7 @@ public class TestFeaturesConfig
                 .setDistributedIndexJoinsEnabled(true)
                 .setJoinDistributionType(BROADCAST)
                 .setJoinMaxBroadcastTableSize(new DataSize(42, GIGABYTE))
-                .setGroupedExecutionForAggregationEnabled(false)
-                .setGroupedExecutionForJoinEnabled(false)
                 .setGroupedExecutionEnabled(false)
-                .setDynamicScheduleForGroupedExecutionEnabled(false)
                 .setRecoverableGroupedExecutionEnabled(true)
                 .setMaxFailedTaskPercentage(0.8)
                 .setMaxStageRetries(10)
@@ -292,17 +307,23 @@ public class TestFeaturesConfig
                 .setRe2JDfaStatesLimit(42)
                 .setRe2JDfaRetries(42)
                 .setSpillEnabled(true)
+                .setJoinSpillingEnabled(true)
                 .setAggregationOperatorUnspillMemoryLimit(DataSize.valueOf("100MB"))
                 .setSpillerSpillPaths("/tmp/custom/spill/path1,/tmp/custom/spill/path2")
                 .setSpillerThreads(42)
                 .setSpillMaxUsedSpaceThreshold(0.8)
                 .setMemoryRevokingThreshold(0.2)
                 .setMemoryRevokingTarget(0.8)
+                .setTaskSpillingStrategy(PER_TASK_MEMORY_THRESHOLD)
+                .setSingleStreamSpillerChoice(SingleStreamSpillerChoice.TEMP_STORAGE)
+                .setSpillerTempStorage("crail")
+                .setMaxRevocableMemoryPerTask(new DataSize(1, GIGABYTE))
                 .setLegacyLogFunction(true)
                 .setExchangeCompressionEnabled(true)
                 .setLegacyTimestamp(false)
                 .setLegacyRowFieldOrdinalAccess(true)
                 .setLegacyCharToVarcharCoercion(true)
+                .setLegacyDateTimestampToVarcharCoercion(true)
                 .setEnableIntermediateAggregations(true)
                 .setParseDecimalLiteralsAsDouble(true)
                 .setForceSingleNodeOutput(false)
@@ -325,7 +346,6 @@ public class TestFeaturesConfig
                 .setPushdownSubfieldsEnabled(true)
                 .setPushdownDereferenceEnabled(true)
                 .setTableWriterMergeOperatorEnabled(false)
-                .setOptimizeFullOuterJoinWithCoalesce(false)
                 .setIndexLoaderTimeout(new Duration(10, SECONDS))
                 .setOptimizedRepartitioningEnabled(true)
                 .setListBuiltInFunctionsOnly(false)
@@ -335,7 +355,12 @@ public class TestFeaturesConfig
                 .setOptimizeCommonSubExpressions(false)
                 .setPreferDistributedUnion(false)
                 .setOptimizeNullsInJoin(true)
-                .setWarnOnNoTableLayoutFilter("ry@nlikestheyankees,ds");
+                .setSkipRedundantSort(false)
+                .setWarnOnNoTableLayoutFilter("ry@nlikestheyankees,ds")
+                .setInlineSqlFunctions(false)
+                .setCheckAccessControlOnUtilizedColumnsOnly(true)
+                .setSkipRedundantSort(false)
+                .setAllowWindowOrderByLiterals(false);
         assertFullMapping(properties, expected);
     }
 

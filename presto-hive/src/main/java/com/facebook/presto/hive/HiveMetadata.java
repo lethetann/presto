@@ -14,7 +14,6 @@
 package com.facebook.presto.hive;
 
 import com.facebook.airlift.json.JsonCodec;
-import com.facebook.presto.common.Page;
 import com.facebook.presto.common.Subfield;
 import com.facebook.presto.common.block.Block;
 import com.facebook.presto.common.predicate.Domain;
@@ -47,6 +46,7 @@ import com.facebook.presto.hive.statistics.HiveStatisticsProvider;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ColumnMetadata;
 import com.facebook.presto.spi.ConnectorInsertTableHandle;
+import com.facebook.presto.spi.ConnectorMetadataUpdateHandle;
 import com.facebook.presto.spi.ConnectorNewTableLayout;
 import com.facebook.presto.spi.ConnectorOutputTableHandle;
 import com.facebook.presto.spi.ConnectorSession;
@@ -61,6 +61,7 @@ import com.facebook.presto.spi.Constraint;
 import com.facebook.presto.spi.DiscretePredicates;
 import com.facebook.presto.spi.InMemoryRecordSet;
 import com.facebook.presto.spi.PrestoException;
+import com.facebook.presto.spi.QueryId;
 import com.facebook.presto.spi.RecordCursor;
 import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.SchemaTablePrefix;
@@ -109,6 +110,7 @@ import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
 import io.airlift.slice.Slice;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hive.serde2.OpenCSVSerde;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.PrimitiveObjectInspector;
 import org.apache.hadoop.hive.serde2.typeinfo.MapTypeInfo;
@@ -149,6 +151,7 @@ import static com.facebook.presto.common.type.DateType.DATE;
 import static com.facebook.presto.common.type.TimestampType.TIMESTAMP;
 import static com.facebook.presto.common.type.VarbinaryType.VARBINARY;
 import static com.facebook.presto.common.type.VarcharType.VARCHAR;
+import static com.facebook.presto.common.type.VarcharType.createUnboundedVarcharType;
 import static com.facebook.presto.common.type.Varchars.isVarcharType;
 import static com.facebook.presto.expressions.LogicalRowExpressions.TRUE_CONSTANT;
 import static com.facebook.presto.expressions.LogicalRowExpressions.binaryExpression;
@@ -178,7 +181,8 @@ import static com.facebook.presto.hive.HiveErrorCode.HIVE_TIMEZONE_MISMATCH;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_UNKNOWN_ERROR;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_UNSUPPORTED_ENCRYPTION_OPERATION;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_UNSUPPORTED_FORMAT;
-import static com.facebook.presto.hive.HiveManifestUtils.createPartitionManifest;
+import static com.facebook.presto.hive.HiveManifestUtils.getManifestSizeInBytes;
+import static com.facebook.presto.hive.HiveManifestUtils.updatePartitionMetadataWithFileNamesAndSizes;
 import static com.facebook.presto.hive.HivePartition.UNPARTITIONED_ID;
 import static com.facebook.presto.hive.HivePartitioningHandle.createHiveCompatiblePartitioningHandle;
 import static com.facebook.presto.hive.HivePartitioningHandle.createPrestoNativePartitioningHandle;
@@ -194,13 +198,16 @@ import static com.facebook.presto.hive.HiveSessionProperties.getTemporaryTableSt
 import static com.facebook.presto.hive.HiveSessionProperties.getVirtualBucketCount;
 import static com.facebook.presto.hive.HiveSessionProperties.isBucketExecutionEnabled;
 import static com.facebook.presto.hive.HiveSessionProperties.isCollectColumnStatisticsOnWrite;
+import static com.facebook.presto.hive.HiveSessionProperties.isFileRenamingEnabled;
 import static com.facebook.presto.hive.HiveSessionProperties.isOfflineDataDebugModeEnabled;
 import static com.facebook.presto.hive.HiveSessionProperties.isOptimizedMismatchedBucketCount;
+import static com.facebook.presto.hive.HiveSessionProperties.isPreferManifestsToListFiles;
 import static com.facebook.presto.hive.HiveSessionProperties.isRespectTableFormat;
 import static com.facebook.presto.hive.HiveSessionProperties.isShufflePartitionedColumnsForTableWriteEnabled;
 import static com.facebook.presto.hive.HiveSessionProperties.isSortedWriteToTempPathEnabled;
 import static com.facebook.presto.hive.HiveSessionProperties.isSortedWritingEnabled;
 import static com.facebook.presto.hive.HiveSessionProperties.isStatisticsEnabled;
+import static com.facebook.presto.hive.HiveSessionProperties.isUsePageFileForHiveUnsupportedType;
 import static com.facebook.presto.hive.HiveStorageFormat.AVRO;
 import static com.facebook.presto.hive.HiveStorageFormat.DWRF;
 import static com.facebook.presto.hive.HiveStorageFormat.ORC;
@@ -209,6 +216,9 @@ import static com.facebook.presto.hive.HiveStorageFormat.values;
 import static com.facebook.presto.hive.HiveTableProperties.AVRO_SCHEMA_URL;
 import static com.facebook.presto.hive.HiveTableProperties.BUCKETED_BY_PROPERTY;
 import static com.facebook.presto.hive.HiveTableProperties.BUCKET_COUNT_PROPERTY;
+import static com.facebook.presto.hive.HiveTableProperties.CSV_ESCAPE;
+import static com.facebook.presto.hive.HiveTableProperties.CSV_QUOTE;
+import static com.facebook.presto.hive.HiveTableProperties.CSV_SEPARATOR;
 import static com.facebook.presto.hive.HiveTableProperties.DWRF_ENCRYPTION_ALGORITHM;
 import static com.facebook.presto.hive.HiveTableProperties.DWRF_ENCRYPTION_PROVIDER;
 import static com.facebook.presto.hive.HiveTableProperties.ENCRYPT_COLUMNS;
@@ -222,6 +232,7 @@ import static com.facebook.presto.hive.HiveTableProperties.SORTED_BY_PROPERTY;
 import static com.facebook.presto.hive.HiveTableProperties.STORAGE_FORMAT_PROPERTY;
 import static com.facebook.presto.hive.HiveTableProperties.getAvroSchemaUrl;
 import static com.facebook.presto.hive.HiveTableProperties.getBucketProperty;
+import static com.facebook.presto.hive.HiveTableProperties.getCsvProperty;
 import static com.facebook.presto.hive.HiveTableProperties.getDwrfEncryptionAlgorithm;
 import static com.facebook.presto.hive.HiveTableProperties.getDwrfEncryptionProvider;
 import static com.facebook.presto.hive.HiveTableProperties.getEncryptColumns;
@@ -233,6 +244,7 @@ import static com.facebook.presto.hive.HiveTableProperties.getOrcBloomFilterFpp;
 import static com.facebook.presto.hive.HiveTableProperties.getPartitionedBy;
 import static com.facebook.presto.hive.HiveTableProperties.getPreferredOrderingColumns;
 import static com.facebook.presto.hive.HiveType.HIVE_BINARY;
+import static com.facebook.presto.hive.HiveType.HIVE_STRING;
 import static com.facebook.presto.hive.HiveType.toHiveType;
 import static com.facebook.presto.hive.HiveUtil.columnExtraInfo;
 import static com.facebook.presto.hive.HiveUtil.decodeViewData;
@@ -306,6 +318,7 @@ import static java.util.Locale.ENGLISH;
 import static java.util.Objects.requireNonNull;
 import static java.util.UUID.randomUUID;
 import static java.util.function.Function.identity;
+import static java.util.stream.Collectors.joining;
 import static java.util.stream.Collectors.toList;
 import static java.util.stream.Collectors.toMap;
 import static java.util.stream.Collectors.toSet;
@@ -331,6 +344,10 @@ public class HiveMetadata
     // TODO: Use a regular number once better hash function is used for table write shuffle partitioning.
     private static final int SHUFFLE_MAX_PARALLELISM_FOR_PARTITIONED_TABLE_WRITE = 1009;
 
+    private static final String CSV_SEPARATOR_KEY = OpenCSVSerde.SEPARATORCHAR;
+    private static final String CSV_QUOTE_KEY = OpenCSVSerde.QUOTECHAR;
+    private static final String CSV_ESCAPE_KEY = OpenCSVSerde.ESCAPECHAR;
+
     private final boolean allowCorruptWritesForTesting;
     private final SemiTransactionalHiveMetastore metastore;
     private final HdfsEnvironment hdfsEnvironment;
@@ -354,6 +371,7 @@ public class HiveMetadata
     private final PartitionObjectBuilder partitionObjectBuilder;
     private final HiveEncryptionInformationProvider encryptionInformationProvider;
     private final HivePartitionStats hivePartitionStats;
+    private final HiveFileRenamer hiveFileRenamer;
 
     public HiveMetadata(
             SemiTransactionalHiveMetastore metastore,
@@ -378,7 +396,8 @@ public class HiveMetadata
             ZeroRowFileCreator zeroRowFileCreator,
             PartitionObjectBuilder partitionObjectBuilder,
             HiveEncryptionInformationProvider encryptionInformationProvider,
-            HivePartitionStats hivePartitionStats)
+            HivePartitionStats hivePartitionStats,
+            HiveFileRenamer hiveFileRenamer)
     {
         this.allowCorruptWritesForTesting = allowCorruptWritesForTesting;
 
@@ -404,6 +423,7 @@ public class HiveMetadata
         this.partitionObjectBuilder = requireNonNull(partitionObjectBuilder, "partitionObjectBuilder is null");
         this.encryptionInformationProvider = requireNonNull(encryptionInformationProvider, "encryptionInformationProvider is null");
         this.hivePartitionStats = requireNonNull(hivePartitionStats, "hivePartitionStats is null");
+        this.hiveFileRenamer = requireNonNull(hiveFileRenamer, "hiveFileRenamer is null");
     }
 
     public SemiTransactionalHiveMetastore getMetastore()
@@ -623,12 +643,43 @@ public class HiveMetadata
             properties.put(AVRO_SCHEMA_URL, avroSchemaUrl);
         }
 
+        // CSV specific property
+        getCsvSerdeProperty(table.get(), CSV_SEPARATOR_KEY)
+                .ifPresent(csvSeparator -> properties.put(CSV_SEPARATOR, csvSeparator));
+        getCsvSerdeProperty(table.get(), CSV_QUOTE_KEY)
+                .ifPresent(csvQuote -> properties.put(CSV_QUOTE, csvQuote));
+        getCsvSerdeProperty(table.get(), CSV_ESCAPE_KEY)
+                .ifPresent(csvEscape -> properties.put(CSV_ESCAPE, csvEscape));
+
         // Hook point for extended versions of the Hive Plugin
         properties.putAll(tableParameterCodec.decode(table.get().getParameters()));
 
         Optional<String> comment = Optional.ofNullable(table.get().getParameters().get(TABLE_COMMENT));
 
         return new ConnectorTableMetadata(tableName, columns.build(), properties.build(), comment);
+    }
+
+    private static Optional<String> getCsvSerdeProperty(Table table, String key)
+    {
+        return getSerdeProperty(table, key).map(csvSerdeProperty -> {
+            if (csvSerdeProperty.length() > 1) {
+                throw new PrestoException(HIVE_INVALID_METADATA, "Only single character can be set for property: " + key);
+            }
+            return csvSerdeProperty;
+        });
+    }
+
+    private static Optional<String> getSerdeProperty(Table table, String key)
+    {
+        String serdePropertyValue = table.getStorage().getSerdeParameters().get(key);
+        String tablePropertyValue = table.getParameters().get(key);
+        if (serdePropertyValue != null && tablePropertyValue != null && !tablePropertyValue.equals(serdePropertyValue)) {
+            // in Hive one can set conflicting values for the same property, in such case it looks like table properties are used
+            throw new PrestoException(
+                    HIVE_INVALID_METADATA,
+                    format("Different values for '%s' set in serde properties and table properties: '%s' and '%s'", key, serdePropertyValue, tablePropertyValue));
+        }
+        return firstNonNullable(tablePropertyValue, serdePropertyValue);
     }
 
     protected Optional<? extends TableEncryptionProperties> getTableEncryptionPropertiesFromHiveProperties(Map<String, String> parameters, HiveStorageFormat storageFormat)
@@ -918,7 +969,6 @@ public class HiveMetadata
     public ConnectorTableHandle createTemporaryTable(ConnectorSession session, List<ColumnMetadata> columns, Optional<ConnectorPartitioningMetadata> partitioningMetadata)
     {
         String schemaName = getTemporaryTableSchema(session);
-        String tableName = PRESTO_TEMPORARY_TABLE_NAME_PREFIX + randomUUID().toString().replaceAll("-", "_");
         HiveStorageFormat storageFormat = getTemporaryTableStorageFormat(session);
 
         Optional<HiveBucketProperty> bucketProperty = partitioningMetadata.map(partitioning -> {
@@ -957,6 +1007,14 @@ public class HiveMetadata
             }
         });
 
+        if (isUsePageFileForHiveUnsupportedType(session)) {
+            if (!columns.stream()
+                    .map(ColumnMetadata::getType)
+                    .allMatch(HiveTypeTranslator::isSupportedHiveType)) {
+                storageFormat = PAGEFILE;
+            }
+        }
+
         // PAGEFILE format doesn't require translation to hive type,
         // choose HIVE_BINARY as a default hive type to make it compatible with Hive connector
         Optional<HiveType> defaultHiveType = storageFormat == PAGEFILE ? Optional.of(HIVE_BINARY) : Optional.empty();
@@ -970,8 +1028,11 @@ public class HiveMetadata
                 ImmutableSet.of(),
                 typeTranslator,
                 defaultHiveType);
+
         validateColumns(storageFormat, columnHandles);
 
+        HiveStorageFormat finalStorageFormat = storageFormat;
+        String tableName = PRESTO_TEMPORARY_TABLE_NAME_PREFIX + finalStorageFormat.name() + "_" + randomUUID().toString().replaceAll("-", "_");
         Table table = Table.builder()
                 .setDatabaseName(schemaName)
                 .setTableName(tableName)
@@ -981,7 +1042,7 @@ public class HiveMetadata
                         .map(handle -> new Column(handle.getName(), handle.getHiveType(), handle.getComment()))
                         .collect(toImmutableList()))
                 .withStorage(storage -> storage
-                        .setStorageFormat(fromHiveStorageFormat(storageFormat))
+                        .setStorageFormat(fromHiveStorageFormat(finalStorageFormat))
                         .setBucketProperty(bucketProperty)
                         .setLocation(""))
                 .build();
@@ -1100,6 +1161,23 @@ public class HiveMetadata
             tableProperties.put(AVRO_SCHEMA_URL_KEY, validateAndNormalizeAvroSchemaUrl(avroSchemaUrl, hdfsContext));
         }
 
+        // CSV specific properties
+        getCsvProperty(tableMetadata.getProperties(), CSV_ESCAPE)
+                .ifPresent(escape -> {
+                    checkFormatForProperty(hiveStorageFormat, HiveStorageFormat.CSV, CSV_ESCAPE);
+                    tableProperties.put(CSV_ESCAPE_KEY, escape.toString());
+                });
+        getCsvProperty(tableMetadata.getProperties(), CSV_QUOTE)
+                .ifPresent(quote -> {
+                    checkFormatForProperty(hiveStorageFormat, HiveStorageFormat.CSV, CSV_QUOTE);
+                    tableProperties.put(CSV_QUOTE_KEY, quote.toString());
+                });
+        getCsvProperty(tableMetadata.getProperties(), CSV_SEPARATOR)
+                .ifPresent(separator -> {
+                    checkFormatForProperty(hiveStorageFormat, HiveStorageFormat.CSV, CSV_SEPARATOR);
+                    tableProperties.put(CSV_SEPARATOR_KEY, separator.toString());
+                });
+
         // Table comment property
         tableMetadata.getComment().ifPresent(value -> tableProperties.put(TABLE_COMMENT, value));
 
@@ -1107,6 +1185,13 @@ public class HiveMetadata
         tableProperties.putAll(tableEncryptionProperties.map(TableEncryptionProperties::toHiveProperties).orElseGet(ImmutableMap::of));
 
         return tableProperties.build();
+    }
+
+    private static void checkFormatForProperty(HiveStorageFormat actualStorageFormat, HiveStorageFormat expectedStorageFormat, String propertyName)
+    {
+        if (actualStorageFormat != expectedStorageFormat) {
+            throw new PrestoException(INVALID_TABLE_PROPERTY, format("Cannot specify %s table property for storage format: %s", propertyName, actualStorageFormat));
+        }
     }
 
     private String validateAndNormalizeAvroSchemaUrl(String url, HdfsContext context)
@@ -1540,7 +1625,12 @@ public class HiveMetadata
             Verify.verify(handle.getPartitionStorageFormat() == handle.getTableStorageFormat());
         }
         for (PartitionUpdate update : partitionUpdates) {
-            Partition partition = partitionObjectBuilder.buildPartitionObject(session, table, update, prestoVersion, partitionEncryptionParameters);
+            Map<String, String> partitionParameters = partitionEncryptionParameters;
+            if (isPreferManifestsToListFiles(session) && isFileRenamingEnabled(session)) {
+                // Store list of file names and sizes in partition metadata when prefer_manifests_to_list_files and file_renaming_enabled are set to true
+                partitionParameters = updatePartitionMetadataWithFileNamesAndSizes(update, partitionParameters);
+            }
+            Partition partition = partitionObjectBuilder.buildPartitionObject(session, table, update, prestoVersion, partitionParameters);
             PartitionStatistics partitionStatistics = createPartitionStatistics(
                     session,
                     update.getStatistics(),
@@ -1550,7 +1640,7 @@ public class HiveMetadata
                     session,
                     handle.getSchemaName(),
                     handle.getTableName(),
-                    partitionObjectBuilder.buildPartitionObject(session, table, update, prestoVersion, partitionEncryptionParameters),
+                    partitionObjectBuilder.buildPartitionObject(session, table, update, prestoVersion, partitionParameters),
                     update.getWritePath(),
                     partitionStatistics);
         }
@@ -1584,6 +1674,7 @@ public class HiveMetadata
             int bucketCount = handle.getBucketProperty().get().getBucketCount();
             LocationHandle locationHandle = handle.getLocationHandle();
             List<String> fileNamesForMissingBuckets = computeFileNamesForMissingBuckets(
+                    session,
                     storageFormat,
                     handle.getCompressionCodec(),
                     handle.getFilePrefix(),
@@ -1595,11 +1686,12 @@ public class HiveMetadata
                     locationHandle.getWritePath(),
                     locationHandle.getTargetPath(),
                     fileNamesForMissingBuckets.stream()
-                            .map(fileName -> new FileWriteInfo(fileName, fileName, Optional.empty()))
+                            .map(fileName -> new FileWriteInfo(fileName, fileName, Optional.of(0L)))
                             .collect(toImmutableList()),
                     0,
                     0,
-                    0));
+                    0,
+                    isFileRenamingEnabled(session)));
         }
 
         ImmutableList.Builder<PartitionUpdate> partitionUpdatesForMissingBucketsBuilder = ImmutableList.builder();
@@ -1607,6 +1699,7 @@ public class HiveMetadata
             int bucketCount = handle.getBucketProperty().get().getBucketCount();
 
             List<String> fileNamesForMissingBuckets = computeFileNamesForMissingBuckets(
+                    session,
                     storageFormat,
                     handle.getCompressionCodec(),
                     handle.getFilePrefix(),
@@ -1618,16 +1711,18 @@ public class HiveMetadata
                     partitionUpdate.getWritePath(),
                     partitionUpdate.getTargetPath(),
                     fileNamesForMissingBuckets.stream()
-                            .map(fileName -> new FileWriteInfo(fileName, fileName, Optional.empty()))
+                            .map(fileName -> new FileWriteInfo(fileName, fileName, Optional.of(0L)))
                             .collect(toImmutableList()),
                     0,
                     0,
-                    0));
+                    0,
+                    isFileRenamingEnabled(session)));
         }
         return partitionUpdatesForMissingBucketsBuilder.build();
     }
 
     private List<String> computeFileNamesForMissingBuckets(
+            ConnectorSession session,
             HiveStorageFormat storageFormat,
             HiveCompressionCodec compressionCodec,
             String filePrefix,
@@ -1641,7 +1736,7 @@ public class HiveMetadata
         String fileExtension = getFileExtension(fromHiveStorageFormat(storageFormat), compressionCodec);
         ImmutableList.Builder<String> missingFileNamesBuilder = ImmutableList.builder();
         for (int i = 0; i < bucketCount; i++) {
-            String targetFileName = HiveWriterFactory.computeBucketedFileName(filePrefix, i) + fileExtension;
+            String targetFileName = isFileRenamingEnabled(session) ? String.valueOf(i) : HiveWriterFactory.computeBucketedFileName(filePrefix, i) + fileExtension;
             if (!existingFileNames.contains(targetFileName)) {
                 missingFileNamesBuilder.add(targetFileName);
             }
@@ -1842,10 +1937,13 @@ public class HiveMetadata
                         .map(encryptionInfo -> encryptionInfo.getDwrfEncryptionMetadata().map(DwrfEncryptionMetadata::getExtraMetadata).orElseGet(ImmutableMap::of))
                         .orElseGet(ImmutableMap::of);
 
-                // TODO: Put the manifest blob in partition parameters
+                if (isPreferManifestsToListFiles(session) && isFileRenamingEnabled(session)) {
+                    // Store list of file names and sizes in partition metadata when prefer_manifests_to_list_files and file_renaming_enabled are set to true
+                    extraPartitionMetadata = updatePartitionMetadataWithFileNamesAndSizes(partitionUpdate, extraPartitionMetadata);
+                }
+
                 // Track the manifest blob size
-                Optional<Page> manifestBlob = createPartitionManifest(partitionUpdate);
-                manifestBlob.ifPresent(manifest -> hivePartitionStats.addManifestSizeInBytes(manifest.getRetainedSizeInBytes()));
+                getManifestSizeInBytes(session, partitionUpdate, extraPartitionMetadata).ifPresent(hivePartitionStats::addManifestSizeInBytes);
 
                 // insert into new partition or overwrite existing partition
                 Partition partition = partitionObjectBuilder.buildPartitionObject(
@@ -1974,9 +2072,26 @@ public class HiveMetadata
                 .put(PRESTO_QUERY_ID_NAME, session.getQueryId())
                 .build();
 
-        List<Column> columns = viewMetadata.getColumns().stream()
-                .map(col -> new Column(col.getName(), toHiveType(typeTranslator, col.getType()), Optional.ofNullable(col.getComment())))
-                .collect(toImmutableList());
+        List<Column> columns = new ArrayList<>();
+        for (ColumnMetadata column : viewMetadata.getColumns()) {
+            try {
+                columns.add(new Column(column.getName(), toHiveType(typeTranslator, column.getType()), Optional.ofNullable(column.getComment())));
+            }
+            catch (PrestoException e) {
+                // if a view uses any unsupported hive types, include only a dummy column value
+                if (e.getErrorCode().equals(NOT_SUPPORTED.toErrorCode())) {
+                    columns = ImmutableList.of(
+                            new Column(
+                                    "dummy",
+                                    HIVE_STRING,
+                                    Optional.of(format("Using dummy because column %s uses unsupported Hive type %s ", column.getName(), column.getType()))));
+                    break;
+                }
+                else {
+                    throw e;
+                }
+            }
+        }
 
         SchemaTableName viewName = viewMetadata.getTable();
 
@@ -2230,7 +2345,8 @@ public class HiveMetadata
                                 hivePartitionResult.getBucketFilter(),
                                 false,
                                 createTableLayoutString(session, handle.getSchemaTableName(), hivePartitionResult.getBucketHandle(), hivePartitionResult.getBucketFilter(), TRUE_CONSTANT, domainPredicate),
-                                desiredColumns.map(columns -> columns.stream().map(column -> (HiveColumnHandle) column).collect(toImmutableSet())))),
+                                desiredColumns.map(columns -> columns.stream().map(column -> (HiveColumnHandle) column).collect(toImmutableSet())),
+                                false)),
                 hivePartitionResult.getUnenforcedConstraint()));
     }
 
@@ -2466,7 +2582,8 @@ public class HiveMetadata
                 hiveLayoutHandle.getBucketFilter(),
                 hiveLayoutHandle.isPushdownFilterEnabled(),
                 hiveLayoutHandle.getLayoutString(),
-                hiveLayoutHandle.getRequestedColumns());
+                hiveLayoutHandle.getRequestedColumns(),
+                hiveLayoutHandle.isPartialAggregationsPushedDown());
     }
 
     @Override
@@ -2626,6 +2743,7 @@ public class HiveMetadata
     {
         validatePartitionColumns(tableMetadata);
         validateBucketColumns(tableMetadata);
+        validateCsvColumns(tableMetadata);
         Optional<HiveBucketProperty> bucketProperty = getBucketProperty(tableMetadata.getProperties());
         if (!bucketProperty.isPresent()) {
             return Optional.empty();
@@ -2846,6 +2964,18 @@ public class HiveMetadata
     {
         HiveInsertTableHandle handle = (HiveInsertTableHandle) tableHandle;
         return toCompletableFuture(stagingFileCommitter.commitFiles(session, handle.getSchemaName(), handle.getTableName(), getPartitionUpdates(fragments)));
+    }
+
+    @Override
+    public List<ConnectorMetadataUpdateHandle> getMetadataUpdateResults(List<ConnectorMetadataUpdateHandle> metadataUpdateRequests, QueryId queryId)
+    {
+        return hiveFileRenamer.getMetadataUpdateResults(metadataUpdateRequests, queryId);
+    }
+
+    @Override
+    public void doMetadataUpdateCleanup(QueryId queryId)
+    {
+        hiveFileRenamer.cleanup(queryId);
     }
 
     private List<GrantInfo> buildGrants(SchemaTableName tableName, PrestoPrincipal principal)
@@ -3078,6 +3208,7 @@ public class HiveMetadata
     {
         validatePartitionColumns(tableMetadata);
         validateBucketColumns(tableMetadata);
+        validateCsvColumns(tableMetadata);
         return getColumnHandles(tableMetadata.getColumns(), partitionColumnNames, typeTranslator);
     }
 
@@ -3114,11 +3245,32 @@ public class HiveMetadata
                     column.getType().getTypeSignature(),
                     ordinal,
                     columnType,
-                    Optional.ofNullable(column.getComment())));
+                    Optional.ofNullable(column.getComment()),
+                    Optional.empty()));
             ordinal++;
         }
 
         return columnHandles.build();
+    }
+
+    private static void validateCsvColumns(ConnectorTableMetadata tableMetadata)
+    {
+        if (getHiveStorageFormat(tableMetadata.getProperties()) != HiveStorageFormat.CSV) {
+            return;
+        }
+
+        Set<String> partitionedBy = ImmutableSet.copyOf(getPartitionedBy(tableMetadata.getProperties()));
+        List<ColumnMetadata> unsupportedColumns = tableMetadata.getColumns().stream()
+                .filter(columnMetadata -> !partitionedBy.contains(columnMetadata.getName()))
+                .filter(columnMetadata -> !columnMetadata.getType().equals(createUnboundedVarcharType()))
+                .collect(toImmutableList());
+
+        if (!unsupportedColumns.isEmpty()) {
+            String joinedUnsupportedColumns = unsupportedColumns.stream()
+                    .map(columnMetadata -> format("%s %s", columnMetadata.getName(), columnMetadata.getType()))
+                    .collect(joining(", "));
+            throw new PrestoException(NOT_SUPPORTED, "Hive CSV storage format only supports VARCHAR (unbounded). Unsupported columns: " + joinedUnsupportedColumns);
+        }
     }
 
     private static Function<HiveColumnHandle, ColumnMetadata> columnMetadataGetter(Table table, TypeManager typeManager)
@@ -3240,5 +3392,15 @@ public class HiveMetadata
                     table.getSchemaName(),
                     table.getTableName().substring(0, table.getTableName().length() - suffix.length()));
         }
+    }
+
+    private static <T> Optional<T> firstNonNullable(T... values)
+    {
+        for (T value : values) {
+            if (value != null) {
+                return Optional.of(value);
+            }
+        }
+        return Optional.empty();
     }
 }

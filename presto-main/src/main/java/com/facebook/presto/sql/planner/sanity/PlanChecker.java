@@ -14,8 +14,8 @@
 package com.facebook.presto.sql.planner.sanity;
 
 import com.facebook.presto.Session;
-import com.facebook.presto.execution.warnings.WarningCollector;
 import com.facebook.presto.metadata.Metadata;
+import com.facebook.presto.spi.WarningCollector;
 import com.facebook.presto.spi.plan.PlanNode;
 import com.facebook.presto.sql.analyzer.FeaturesConfig;
 import com.facebook.presto.sql.parser.SqlParser;
@@ -57,7 +57,8 @@ public final class PlanChecker
                         new NoSubqueryExpressionLeftChecker(),
                         new NoIdentifierLeftChecker(),
                         new VerifyNoFilteredAggregations(),
-                        new VerifyNoOriginalExpression())
+                        new VerifyNoOriginalExpression(),
+                        new ValidateStreamingJoins())
                 .putAll(
                         Stage.FINAL,
                         new CheckUnsupportedExternalFunctions(),

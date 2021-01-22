@@ -14,9 +14,8 @@
 package com.facebook.presto.execution;
 
 import com.facebook.airlift.json.ObjectMapperProvider;
-import com.facebook.presto.block.BlockEncodingManager;
+import com.facebook.presto.common.block.BlockEncodingManager;
 import com.facebook.presto.common.predicate.TupleDomain;
-import com.facebook.presto.common.type.TestingTypeManager;
 import com.facebook.presto.cost.StatsAndCosts;
 import com.facebook.presto.event.SplitMonitor;
 import com.facebook.presto.eventlistener.EventListenerManager;
@@ -27,10 +26,12 @@ import com.facebook.presto.execution.scheduler.NodeSchedulerConfig;
 import com.facebook.presto.execution.scheduler.TableWriteInfo;
 import com.facebook.presto.execution.scheduler.nodeSelection.NodeSelectionStats;
 import com.facebook.presto.index.IndexManager;
+import com.facebook.presto.metadata.ConnectorMetadataUpdaterManager;
 import com.facebook.presto.metadata.InMemoryNodeManager;
 import com.facebook.presto.metadata.MetadataManager;
 import com.facebook.presto.metadata.Split;
 import com.facebook.presto.operator.LookupJoinOperators;
+import com.facebook.presto.operator.NoOpFragmentResultCacheManager;
 import com.facebook.presto.operator.PagesIndex;
 import com.facebook.presto.operator.StageExecutionDescriptor;
 import com.facebook.presto.operator.TableCommitContext;
@@ -63,6 +64,7 @@ import com.facebook.presto.testing.TestingMetadata.TestingTableHandle;
 import com.facebook.presto.testing.TestingSplit;
 import com.facebook.presto.testing.TestingTransactionHandle;
 import com.facebook.presto.util.FinalizerService;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
@@ -146,6 +148,7 @@ public final class TaskTestUtils
                 partitioningProviderManager,
                 nodePartitioningManager,
                 new PageSinkManager(),
+                new ConnectorMetadataUpdaterManager(),
                 new ExpressionCompiler(metadata, pageFunctionCompiler),
                 pageFunctionCompiler,
                 new JoinFilterFunctionCompiler(metadata),
@@ -160,13 +163,15 @@ public final class TaskTestUtils
                 (types, partitionFunction, spillContext, memoryContext) -> {
                     throw new UnsupportedOperationException();
                 },
-                new BlockEncodingManager(new TestingTypeManager()),
+                new BlockEncodingManager(),
                 new PagesIndex.TestingFactory(false),
                 new JoinCompiler(MetadataManager.createTestMetadataManager(), new FeaturesConfig()),
                 new LookupJoinOperators(),
                 new OrderingCompiler(),
                 jsonCodec(TableCommitContext.class),
-                new RowExpressionDeterminismEvaluator(metadata));
+                new RowExpressionDeterminismEvaluator(metadata),
+                new NoOpFragmentResultCacheManager(),
+                new ObjectMapper());
     }
 
     public static TaskInfo updateTask(SqlTask sqlTask, List<TaskSource> taskSources, OutputBuffers outputBuffers)
